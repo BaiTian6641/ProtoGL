@@ -1,0 +1,86 @@
+# ProtoGL Library
+
+**Architecture-agnostic, Vulkan-like graphics command buffer API** for host → GPU rendering pipelines.
+
+## Architecture
+
+The host MCU (e.g., ESP32-S3) records draw commands into a linear byte buffer using `PglEncoder`, then `PglDevice` DMA-transfers the buffer over a high-speed data bus (Octal SPI) to the GPU. The GPU parses the commands, rasterizes the scene, and outputs to the display (HUB75 LED matrices, SPI LCD, etc.).
+
+**The wire protocol is GPU-architecture-agnostic.** The same command bytes work on:
+- ARM Cortex-M33 (RP2350 reference implementation)
+- RISC-V Hazard3 (RP2350 RISC-V mode)
+- Custom RISC-V cores
+- FPGAs with soft-core or hardened rasterizer
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `ProtoGL.h` | Single-include umbrella header |
+| `PglTypes.h` | Wire-format structs, enums, resource handles, limits, capability query |
+| `PglOpcodes.h` | Command opcode constants (0x01–0x8F) |
+| `PglCRC16.h` | CRC-16/CCITT for frame integrity |
+| `PglEncoder.h` | Command buffer encoder (records commands into byte array) — host side |
+| `PglParser.h` | Alignment-safe command buffer parser utilities — GPU side (safe on RISC-V) |
+| `PglDevice.h` | Device manager (buffer lifecycle, DMA transport, I2C config) — host side |
+
+## Quick Start
+
+```cpp
+#include <ProtoGL.h>
+
+PglDevice gpu;
+gpu.Initialize({
+    .spiClockMHz = 80,
+    .i2cAddress = 0x3C,
+    .commandBufferSize = 32768,
+});
+
+// Query GPU capabilities (architecture, SRAM, limits)
+PglCapabilityResponse cap = gpu.QueryCapability();
+// cap.gpuArch == PGL_ARCH_ARM_CM33, PGL_ARCH_RISCV_HAZARD3, etc.
+
+// Upload mesh once
+auto* enc = gpu.GetEncoder();
+// ... use encoder directly for resource creation outside frame scope
+
+// Per-frame loop:
+gpu.BeginFrame(frameNum, deltaTimeUs);
+auto* enc = gpu.GetEncoder();
+enc->SetCamera(0, 0, camPos, camRot, camScale, lookOffset, baseRot, false);
+enc->DrawObject(meshId, matId, pos, rot, scale, baseRot, sro, so, ro, true);
+gpu.EndFrame();  // triggers DMA transfer
+```
+
+## GPU-Side Parsing (RISC-V / No Unaligned Access)
+
+```cpp
+#include "PglParser.h"
+
+const uint8_t* ptr = receivedBuffer;
+PglFrameHeader hdr;
+PglReadStruct(ptr, hdr);  // safe memcpy-based read
+
+while (ptr < end) {
+    PglCommandHeader cmd;
+    PglReadStruct(ptr, cmd);
+    switch (cmd.opcode) {
+        case PGL_CMD_DRAW_OBJECT: {
+            PglCmdDrawObject draw;
+            PglReadStruct(ptr, draw);
+            // ... process draw call
+            break;
+        }
+        // ...
+    }
+}
+```
+
+## Status
+
+- **v0.3.0** — Wire format frozen (backward-compatible with v0.2). Added architecture-agnostic support: GPU capability query, `PglParser.h` for alignment-safe deserialization, `PglGpuArch` enum.
+- Transport stubs (`SubmitDMA`, `WriteI2C`) are placeholder — to be implemented in Milestone M2.
+
+## Specification
+
+See `docs/ProtoGL_API_Spec.md` for the complete wire-format specification.

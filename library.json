@@ -1,0 +1,21 @@
+{
+    "name": "ProtoGL",
+    "version": "0.3.0",
+    "description": "Architecture-agnostic Vulkan-like graphics command buffer API for host-to-GPU rendering pipelines",
+    "keywords": "graphics, gpu, hub75, led-matrix, rp2350, risc-v, esp32, octal-spi, command-buffer, renderer",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "ProtoTracer Contributors"
+        }
+    ],
+    "frameworks": ["arduino", "espidf"],
+    "platforms": ["espressif32"],
+    "headers": "ProtoGL.h",
+    "build": {
+        "srcDir": "src",
+        "flags": [
+            "-std=gnu++17"
+        ]
+    }
+}
