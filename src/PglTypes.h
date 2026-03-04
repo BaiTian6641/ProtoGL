@@ -5,7 +5,7 @@
  * These structs are designed for direct serialization (little-endian, packed).
  * They are shared between the ESP32-S3 host encoder and the RP2350 GPU decoder.
  *
- * ProtoGL API Specification v0.3 — FROZEN
+ * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
  */
 
 #pragma once
@@ -26,6 +26,32 @@ static constexpr PglMaterial PGL_INVALID_MATERIAL  = 0xFFFF;
 static constexpr PglTexture  PGL_INVALID_TEXTURE   = 0xFFFF;
 static constexpr PglCamera   PGL_INVALID_CAMERA    = 0xFF;
 static constexpr PglLayout   PGL_INVALID_LAYOUT    = 0xFF;
+
+// ─── GPU Memory Types ───────────────────────────────────────────────────────
+
+/// Memory tier identifier — selects which physical memory to target.
+enum PglMemTier : uint8_t {
+    PGL_TIER_SRAM       = 0,   // Tier 0: On-chip SRAM (520 KB, 1-cycle)
+    PGL_TIER_OPI_PSRAM  = 1,   // Tier 1: OPI PSRAM via PIO2 (APS6408L, ~150 MB/s)
+    PGL_TIER_QSPI_PSRAM = 2,   // Tier 2: QSPI PSRAM via QMI CS1 (XIP, ~75 MB/s)
+    PGL_TIER_AUTO       = 0xFF, // Let GPU decide (tiering manager)
+};
+
+/// Opaque handle for GPU-side memory allocations.
+using PglMemHandle = uint16_t;
+static constexpr PglMemHandle PGL_INVALID_MEM_HANDLE = 0xFFFF;
+
+/// Maximum number of concurrent GPU memory allocations tracked.
+static constexpr uint16_t PGL_MAX_MEM_ALLOCATIONS = 256;
+
+/// Resource class identifiers for tier placement hints.
+enum PglMemResourceClass : uint8_t {
+    PGL_RES_CLASS_MESH     = 0,
+    PGL_RES_CLASS_MATERIAL = 1,
+    PGL_RES_CLASS_TEXTURE  = 2,
+    PGL_RES_CLASS_LAYOUT   = 3,
+    PGL_RES_CLASS_GENERIC  = 4,  // Raw user allocation
+};
 
 // ─── Limits ─────────────────────────────────────────────────────────────────
 
@@ -358,6 +384,80 @@ struct PglRectLayoutData {
 };
 static_assert(sizeof(PglRectLayoutData) == 20, "PglRectLayoutData must be 20 bytes");
 
+// ─── GPU Memory Access Command Payloads (0x30 – 0x3F) ──────────────────────
+
+/// CMD_MEM_WRITE (0x30) — header only; raw data bytes follow.
+/// Writes `size` bytes to address `address` in the specified memory tier.
+/// Payload on wire: PglCmdMemWriteHeader + size bytes of data.
+struct PglCmdMemWriteHeader {
+    uint8_t  tier;          // PglMemTier
+    uint32_t address;       // Byte offset within tier address space
+    uint32_t size;          // Number of data bytes that follow
+};
+static_assert(sizeof(PglCmdMemWriteHeader) == 9, "PglCmdMemWriteHeader must be 9 bytes");
+
+/// CMD_MEM_READ_REQUEST (0x31) — request GPU to stage memory for I2C readback.
+/// After receiving this, GPU copies the requested range into an internal
+/// staging buffer accessible via PGL_REG_MEM_READ_DATA (I2C).
+struct PglCmdMemReadRequest {
+    uint8_t  tier;          // PglMemTier
+    uint32_t address;       // Byte offset within tier
+    uint16_t size;          // Bytes to stage (max 4096 per request)
+};
+static_assert(sizeof(PglCmdMemReadRequest) == 7, "PglCmdMemReadRequest must be 7 bytes");
+
+/// Maximum bytes that can be staged for a single read-request.
+static constexpr uint16_t PGL_MEM_READ_MAX_SIZE = 4096;
+
+/// CMD_MEM_SET_RESOURCE_TIER (0x32) — tier placement hint for a resource.
+/// Tells the GPU's tiering manager which tier a resource should prefer.
+struct PglCmdSetResourceTier {
+    uint8_t  resourceClass; // PglMemResourceClass
+    uint16_t resourceId;    // Handle (meshId, materialId, textureId, etc.)
+    uint8_t  preferredTier; // PglMemTier (or PGL_TIER_AUTO)
+    uint8_t  flags;         // bit0: pinned (never demote/promote)
+};
+static_assert(sizeof(PglCmdSetResourceTier) == 5, "PglCmdSetResourceTier must be 5 bytes");
+
+enum PglResourceTierFlags : uint8_t {
+    PGL_TIER_FLAG_PINNED = 0x01,  // Prevent automatic tier migration
+};
+
+/// CMD_MEM_ALLOC (0x33) — allocate a region in a specific GPU memory tier.
+/// Result (handle + address) can be read via PGL_REG_MEM_ALLOC_RESULT (I2C).
+struct PglCmdMemAlloc {
+    uint8_t  tier;          // PglMemTier (PGL_TIER_AUTO not allowed)
+    uint32_t size;          // Bytes requested
+    uint16_t tag;           // Caller-defined tag for identification/debug
+};
+static_assert(sizeof(PglCmdMemAlloc) == 7, "PglCmdMemAlloc must be 7 bytes");
+
+/// CMD_MEM_FREE (0x34) — free a previously allocated GPU memory region.
+struct PglCmdMemFree {
+    PglMemHandle handle;    // Handle returned by MEM_ALLOC
+};
+static_assert(sizeof(PglCmdMemFree) == 2, "PglCmdMemFree must be 2 bytes");
+
+/// CMD_FRAMEBUFFER_CAPTURE (0x35) — snapshot the framebuffer for readback.
+/// GPU copies the selected buffer into the staging area. Host reads it
+/// via PGL_REG_MEM_READ_DATA (I2C) in 32-byte chunks.
+struct PglCmdFramebufferCapture {
+    uint8_t bufferSelect;   // 0=front (display), 1=back (in-progress)
+    uint8_t format;         // PglTextureFormat (0=RGB565, 1=RGB888)
+};
+static_assert(sizeof(PglCmdFramebufferCapture) == 2, "PglCmdFramebufferCapture must be 2 bytes");
+
+/// CMD_MEM_COPY (0x36) — GPU-internal copy between memory regions/tiers.
+/// Executes entirely on-GPU (no host data transfer needed).
+struct PglCmdMemCopy {
+    uint8_t  srcTier;       // Source PglMemTier
+    uint32_t srcAddress;    // Source byte offset
+    uint8_t  dstTier;       // Destination PglMemTier
+    uint32_t dstAddress;    // Destination byte offset
+    uint32_t size;          // Bytes to copy
+};
+static_assert(sizeof(PglCmdMemCopy) == 14, "PglCmdMemCopy must be 14 bytes");
+
 #pragma pack(pop)
 
 // ─── Material Types ─────────────────────────────────────────────────────────
@@ -521,6 +621,16 @@ enum PglI2CRegister : uint8_t {
     PGL_REG_CAPABILITY_QUERY = 0x09,  // Returns PglCapabilityResponse
     PGL_REG_STATUS_REQUEST   = 0x0A,
     PGL_REG_RESET_GPU        = 0x0B,
+
+    // ── GPU Memory Access Registers (0x0C – 0x0F) ──
+    PGL_REG_MEM_TIER_INFO    = 0x0C,  // Read: PglMemTierInfoResponse (per-tier stats)
+    PGL_REG_MEM_READ_ADDR    = 0x0D,  // Write: PglMemReadSetup (set read address)
+    PGL_REG_MEM_READ_DATA    = 0x0E,  // Read: 32 bytes from staged address, auto-increments
+    PGL_REG_MEM_ALLOC_RESULT = 0x0F,  // Read: PglMemAllocResult (last alloc status)
+
+    // ── Extended Diagnostics & Control (0x10 – 0x13) ──
+    PGL_REG_SET_CLOCK_FREQ   = 0x10,  // Write: PglClockRequest (target MHz + voltage)
+    PGL_REG_EXTENDED_STATUS  = 0x11,  // Read: PglExtendedStatusResponse (32 bytes)
 };
 
 #pragma pack(push, 1)
@@ -539,10 +649,66 @@ enum PglStatusFlags : uint8_t {
     PGL_STATUS_BUFFER_OVERFLOW = 0x02,
 };
 
+/// Extended status response — 32 bytes of detailed GPU diagnostics.
+/// Returned by PGL_REG_EXTENDED_STATUS (0x11).
+struct PglExtendedStatusResponse {
+    // Core performance (bytes 0–7)
+    uint16_t currentFPS;        // Measured render FPS
+    uint16_t droppedFrames;     // Cumulative CRC/overflow drops
+    uint8_t  gpuUsagePercent;   // 0–100 — fraction of frame time spent rendering
+    uint8_t  core0UsagePercent; // 0–100 — Core 0 render load
+    uint8_t  core1UsagePercent; // 0–100 — Core 1 render load
+    uint8_t  flags;             // PglStatusFlags
+
+    // Thermal + power (bytes 8–11)
+    int16_t  temperatureQ8;     // Die temperature in Q8.8 fixed-point (°C × 256)
+    uint16_t currentClockMHz;   // Actual running clock frequency in MHz
+
+    // Memory (bytes 12–19)
+    uint16_t sramFreeKB;        // Free internal SRAM in KB
+    uint16_t opiVramTotalKB;    // OPI PSRAM total (0 if not present)
+    uint16_t opiVramFreeKB;     // OPI PSRAM free
+    uint16_t qspiVramTotalKB;   // QSPI PSRAM total (0 if not present)
+
+    // Frame timing (bytes 20–27)
+    uint16_t frameTimeUs;       // Last frame time in microseconds
+    uint16_t rasterTimeUs;      // Rasterization time (both cores)
+    uint16_t transferTimeUs;    // SPI receive + command parse time
+    uint16_t hub75RefreshHz;    // HUB75 display refresh rate
+
+    // Counters (bytes 28–31)
+    uint16_t qspiVramFreeKB;    // QSPI PSRAM free
+    uint8_t  vramTierFlags;     // bit0: OPI detected, bit1: QSPI detected,
+                                // bit2: OPI initialised, bit3: QSPI initialised
+    uint8_t  reserved;
+};
+static_assert(sizeof(PglExtendedStatusResponse) == 32, "PglExtendedStatusResponse must be 32 bytes");
+
+/// GPU VRAM tier presence flags (PglExtendedStatusResponse::vramTierFlags)
+enum PglVramTierFlags : uint8_t {
+    PGL_VRAM_OPI_DETECTED    = 0x01,  // OPI PSRAM chip responded to read-ID
+    PGL_VRAM_QSPI_DETECTED   = 0x02,  // QSPI PSRAM chip responded to read-ID
+    PGL_VRAM_OPI_INITIALISED  = 0x04,  // OPI PSRAM driver fully initialised
+    PGL_VRAM_QSPI_INITIALISED = 0x08,  // QSPI PSRAM driver fully initialised
+};
+
+/// Clock change request — written to PGL_REG_SET_CLOCK_FREQ (0x10)
+struct PglClockRequest {
+    uint16_t targetMHz;         // Desired system clock in MHz (0 = query only)
+    uint8_t  voltageLevel;      // VREG voltage enum (0 = auto-select)
+    uint8_t  flags;             // bit0: reconfigurePIO after change
+};
+static_assert(sizeof(PglClockRequest) == 4, "PglClockRequest must be 4 bytes");
+
+enum PglClockFlags : uint8_t {
+    PGL_CLOCK_RECONFIGURE_PIO = 0x01, // Recalculate PIO clock dividers
+    PGL_CLOCK_THERMAL_AUTO    = 0x02, // Enable automatic thermal throttling
+};
+
 /// Returned by PGL_REG_CAPABILITY_QUERY (0x09). Allows the host to discover
 /// what GPU core is on the other end of the wire.
 struct PglCapabilityResponse {
-    uint8_t  protoVersion;   // ProtoGL protocol version (currently 3 = v0.3)
+    uint8_t  protoVersion;   // ProtoGL protocol version (currently 5 = v0.5)
     uint8_t  gpuArch;        // PglGpuArch enum value
     uint8_t  coreCount;      // Number of render cores (e.g., 2 for RP2350)
     uint8_t  coreFreqMHz;    // Core clock in MHz (e.g., 150)
@@ -562,6 +728,63 @@ enum PglCapabilityFlags : uint8_t {
     PGL_CAP_UNALIGNED_ACCESS = 0x02,  // Safe unaligned loads (ARM CM33)
     PGL_CAP_DSP              = 0x04,  // DSP extension (ARM DSP, RISC-V P)
     PGL_CAP_SIMD             = 0x08,  // SIMD extension (Helium, RISC-V V)
+    PGL_CAP_OPI_VRAM         = 0x10,  // OPI PSRAM detected on PIO2
+    PGL_CAP_QSPI_VRAM        = 0x20,  // QSPI PSRAM detected on QMI CS1
+    PGL_CAP_DYNAMIC_CLOCK    = 0x40,  // Supports runtime clock adjustment
+    PGL_CAP_TEMP_SENSOR      = 0x80,  // On-chip temperature sensor available
+};
+
+// ─── GPU Memory I2C Response Structs ────────────────────────────────────────
+
+/// Returned by PGL_REG_MEM_TIER_INFO (0x0C).
+/// Reports per-tier capacity, usage, and cache statistics.
+struct PglMemTierInfoResponse {
+    // Tier 0 — SRAM
+    uint16_t sramTotalKB;       // Total SRAM available for GPU use
+    uint16_t sramFreeKB;        // Free SRAM
+    // Tier 1 — OPI PSRAM
+    uint16_t opiTotalKB;        // Total OPI PSRAM (0 if not present)
+    uint16_t opiFreeKB;         // Free OPI PSRAM
+    uint8_t  opiEnabled;        // 1 if OPI PSRAM driver initialized
+    // Tier 2 — QSPI PSRAM
+    uint16_t qspiTotalKB;       // Total QSPI PSRAM (0 if not present)
+    uint16_t qspiFreeKB;        // Free QSPI PSRAM
+    uint8_t  qspiEnabled;       // 1 if QSPI PSRAM driver initialized
+    // Cache / tiering stats
+    uint16_t cachedEntries;      // Number of entries in SRAM cache arena
+    uint16_t totalManagedAllocs; // Total allocations tracked by tier manager
+    uint8_t  cacheHitRate;       // Percentage 0-100 (rolling average)
+    uint8_t  reserved;           // Padding to 20 bytes
+};
+static_assert(sizeof(PglMemTierInfoResponse) == 20, "PglMemTierInfoResponse must be 20 bytes");
+
+/// Written to PGL_REG_MEM_READ_ADDR (0x0D) to configure the next I2C read.
+/// After writing this, the host reads PGL_REG_MEM_READ_DATA to get data.
+struct PglMemReadSetup {
+    uint8_t  tier;              // PglMemTier
+    uint32_t address;           // Byte offset within tier
+    uint16_t length;            // Total bytes to read (max PGL_MEM_READ_MAX_SIZE)
+};
+static_assert(sizeof(PglMemReadSetup) == 7, "PglMemReadSetup must be 7 bytes");
+
+/// Bytes returned per PGL_REG_MEM_READ_DATA (0x0E) I2C read transaction.
+/// Host must issue ceil(length / 32) reads to get all staged data.
+static constexpr uint8_t PGL_MEM_READ_CHUNK_SIZE = 32;
+
+/// Returned by PGL_REG_MEM_ALLOC_RESULT (0x0F) after a CMD_MEM_ALLOC.
+struct PglMemAllocResult {
+    PglMemHandle handle;        // Allocated handle (PGL_INVALID_MEM_HANDLE on failure)
+    uint32_t     address;       // Tier-relative byte address of allocation
+    uint8_t      status;        // PglMemAllocStatus
+};
+static_assert(sizeof(PglMemAllocResult) == 7, "PglMemAllocResult must be 7 bytes");
+
+enum PglMemAllocStatus : uint8_t {
+    PGL_ALLOC_OK               = 0x00,
+    PGL_ALLOC_OUT_OF_MEMORY    = 0x01,
+    PGL_ALLOC_INVALID_TIER     = 0x02,
+    PGL_ALLOC_TIER_DISABLED    = 0x03,
+    PGL_ALLOC_HANDLE_EXHAUSTED = 0x04,
 };
 
 #pragma pack(pop)

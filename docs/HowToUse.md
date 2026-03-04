@@ -721,6 +721,9 @@ All structs are **packed, little-endian**. The GPU parser uses `memcpy`-based re
 | `ResetGPU()` | I2C: full GPU reset |
 | `QueryStatus()` | I2C: read GPU status |
 | `QueryCapability()` | I2C: read GPU capabilities |
+| `QueryMemTierInfo()` | I2C: read per-tier memory stats (0x0C) |
+| `ReadMemData(buf, len)` | I2C: read staged memory in 32B chunks (0x0E) |
+| `ReadAllocResult()` | I2C: read last allocation result (0x0F) |
 | `IsGpuReady()` | Check RDY pin state |
 | `GetDroppedFrames()` | Frames dropped (GPU busy) |
 | `GetOverflowFrames()` | Frames skipped (buffer overflow) |
@@ -750,6 +753,13 @@ All structs are **packed, little-endian**. The GPU parser uses `memcpy`-based re
 | `SetDisplacement(...)` | Displacement shader (chromatic) |
 | `SetColorAdjust(...)` | Color adjustment shader |
 | `ClearShader(camId, slot)` | Remove shader from slot |
+| `MemWrite(tier, addr, data, size)` | Write raw bytes to GPU memory tier |
+| `MemReadRequest(tier, addr, size)` | Stage GPU memory for I2C readback |
+| `SetResourceTier(class, id, tier, pinned)` | Set preferred tier for a resource |
+| `MemAlloc(tier, size, tag)` | Allocate region in GPU memory tier |
+| `MemFree(handle)` | Free a GPU memory allocation |
+| `FramebufferCapture(buf, fmt)` | Snapshot framebuffer for readback |
+| `MemCopy(srcTier, srcAddr, dstTier, dstAddr, size)` | GPU-internal memory copy |
 | `HasOverflow()` | Check if buffer capacity exceeded |
 | `GetLength()` | Current encoded byte count |
 | `GetBuffer()` | Pointer to encoded data |
@@ -769,4 +779,4 @@ All structs are **packed, little-endian**. The GPU parser uses `memcpy`-based re
 
 ---
 
-*ProtoGL API v0.3 — Specification FROZEN*
+*ProtoGL API v0.5 — Extends v0.3 frozen wire format with GPU memory access commands*

@@ -2,17 +2,18 @@
  * @file PglOpcodes.h
  * @brief ProtoGL command opcode definitions.
  *
- * Opcodes 0x01-0x7F: Resource management (create/update/destroy).
+ * Opcodes 0x01-0x2F: Resource management (create/update/destroy).
+ * Opcodes 0x30-0x3F: GPU memory access commands.
  * Opcodes 0x80-0x8F: Per-frame rendering commands.
  *
- * ProtoGL API Specification v0.3 — FROZEN
+ * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
  */
 
 #pragma once
 
 #include <cstdint>
 
-// ─── Resource Commands (0x01 – 0x7F) ────────────────────────────────────────
+// ─── Resource Commands (0x01 – 0x2F) ────────────────────────────────────────
 
 static constexpr uint8_t PGL_CMD_CREATE_MESH              = 0x01;
 static constexpr uint8_t PGL_CMD_DESTROY_MESH             = 0x02;
@@ -27,6 +28,19 @@ static constexpr uint8_t PGL_CMD_CREATE_TEXTURE           = 0x18;
 static constexpr uint8_t PGL_CMD_DESTROY_TEXTURE          = 0x19;
 
 static constexpr uint8_t PGL_CMD_SET_PIXEL_LAYOUT         = 0x20;
+
+// ─── GPU Memory Access Commands (0x30 – 0x3F) ──────────────────────────────
+// These commands allow the host to directly read/write GPU device memory
+// across all tiers (SRAM, OPI PSRAM, QSPI PSRAM), allocate/free regions,
+// control resource tier placement, and capture the framebuffer.
+
+static constexpr uint8_t PGL_CMD_MEM_WRITE               = 0x30;  // Write bytes → tier:addr
+static constexpr uint8_t PGL_CMD_MEM_READ_REQUEST        = 0x31;  // Stage data for I2C readback
+static constexpr uint8_t PGL_CMD_MEM_SET_RESOURCE_TIER   = 0x32;  // Tier placement hint
+static constexpr uint8_t PGL_CMD_MEM_ALLOC               = 0x33;  // Allocate region in tier
+static constexpr uint8_t PGL_CMD_MEM_FREE                = 0x34;  // Free allocated region
+static constexpr uint8_t PGL_CMD_FRAMEBUFFER_CAPTURE     = 0x35;  // Snapshot FB for readback
+static constexpr uint8_t PGL_CMD_MEM_COPY                = 0x36;  // GPU-internal tier-to-tier copy
 
 // ─── Per-Frame Rendering Commands (0x80 – 0x8F) ─────────────────────────────
 

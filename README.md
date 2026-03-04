@@ -18,7 +18,7 @@ The host MCU (e.g., ESP32-S3) records draw commands into a linear byte buffer us
 |---|---|
 | `ProtoGL.h` | Single-include umbrella header |
 | `PglTypes.h` | Wire-format structs, enums, resource handles, limits, capability query |
-| `PglOpcodes.h` | Command opcode constants (0x01–0x8F) |
+| `PglOpcodes.h` | Command opcode constants (0x01–0x3F, 0x80–0x8F) |
 | `PglCRC16.h` | CRC-16/CCITT for frame integrity |
 | `PglEncoder.h` | Command buffer encoder (records commands into byte array) — host side |
 | `PglParser.h` | Alignment-safe command buffer parser utilities — GPU side (safe on RISC-V) |
@@ -78,8 +78,11 @@ while (ptr < end) {
 
 ## Status
 
-- **v0.3.0** — Wire format frozen (backward-compatible with v0.2). Added architecture-agnostic support: GPU capability query, `PglParser.h` for alignment-safe deserialization, `PglGpuArch` enum.
-- Transport stubs (`SubmitDMA`, `WriteI2C`) are placeholder — to be implemented in Milestone M2.
+- **v0.5.0** — GPU memory access API: 7 new SPI commands (0x30–0x3F) for direct memory read/write across all tiers (SRAM, OPI PSRAM, QSPI PSRAM). 4 new I2C registers (0x0C–0x0F) for tier info, readback, and allocation status. Framebuffer capture for screenshots. Backward-compatible with v0.3 wire format.
+- **v0.4.0** — M4 rasterizer fully implemented on GPU side: vertex transform, perspective/ortho projection, QuadTree spatial indexing, per-pixel barycentric rasterization with Z-buffer, SimpleMaterial evaluation. Dual-core parallel RasterizeRange.
+- **v0.3.1** — General shader system: 3 shader classes (CONVOLUTION, DISPLACEMENT, COLOR_ADJUST) replacing 8 hardcoded effects. Animated oscillator waveforms.
+- **v0.3.0** — Wire format frozen (backward-compatible with v0.2). Architecture-agnostic: GPU capability query, `PglParser.h` for alignment-safe deserialization, `PglGpuArch` enum.
+- Host-side encoder and device fully implemented (M2 complete). GPU firmware transport, display, and rasterizer all implemented.
 
 ## Specification
 

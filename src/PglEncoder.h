@@ -13,7 +13,7 @@
  *   encoder.EndFrame();
  *   // encoder.GetBuffer() / encoder.GetLength() → DMA source
  *
- * ProtoGL API Specification v0.3 — FROZEN
+ * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
  */
 
 #pragma once
@@ -482,6 +482,133 @@ public:
         WriteCommandHeader(PGL_CMD_SET_PIXEL_LAYOUT, totalPayload);
         WriteRaw(&hdr, sizeof(hdr));
         WriteRaw(&rect, sizeof(rect));
+    }
+
+    // ─── GPU Memory Access ──────────────────────────────────────────────
+
+    /**
+     * @brief Write raw bytes to a specific GPU memory tier and address.
+     * @param tier    Target memory tier (PglMemTier).
+     * @param address Byte offset within the tier's address space.
+     * @param data    Pointer to source data on the host.
+     * @param size    Number of bytes to write.
+     */
+    void MemWrite(PglMemTier tier, uint32_t address,
+                  const void* data, uint32_t size) {
+        PglCmdMemWriteHeader hdr{};
+        hdr.tier    = static_cast<uint8_t>(tier);
+        hdr.address = address;
+        hdr.size    = size;
+
+        const uint32_t totalPayload = sizeof(hdr) + size;
+        WriteCommandHeader(PGL_CMD_MEM_WRITE, static_cast<uint16_t>(totalPayload));
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(data, size);
+    }
+
+    /**
+     * @brief Request GPU to stage a block of memory for I2C readback.
+     *
+     * After this command is processed, the host can read the data via
+     * PGL_REG_MEM_READ_DATA I2C register in 32-byte chunks.
+     *
+     * @param tier    Source memory tier.
+     * @param address Byte offset within the tier.
+     * @param size    Bytes to stage (max PGL_MEM_READ_MAX_SIZE = 4096).
+     */
+    void MemReadRequest(PglMemTier tier, uint32_t address, uint16_t size) {
+        PglCmdMemReadRequest payload{};
+        payload.tier    = static_cast<uint8_t>(tier);
+        payload.address = address;
+        payload.size    = (size > PGL_MEM_READ_MAX_SIZE) ? PGL_MEM_READ_MAX_SIZE : size;
+        WriteCommand(PGL_CMD_MEM_READ_REQUEST, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Set the preferred memory tier for a GPU resource.
+     * @param resourceClass  Resource type (mesh, material, texture, layout, generic).
+     * @param resourceId     Handle of the resource.
+     * @param preferredTier  Desired tier (or PGL_TIER_AUTO for GPU-managed).
+     * @param pinned         If true, resource is never auto-migrated between tiers.
+     */
+    void SetResourceTier(PglMemResourceClass resourceClass, uint16_t resourceId,
+                         PglMemTier preferredTier, bool pinned = false) {
+        PglCmdSetResourceTier payload{};
+        payload.resourceClass = static_cast<uint8_t>(resourceClass);
+        payload.resourceId    = resourceId;
+        payload.preferredTier = static_cast<uint8_t>(preferredTier);
+        payload.flags         = pinned ? PGL_TIER_FLAG_PINNED : 0;
+        WriteCommand(PGL_CMD_MEM_SET_RESOURCE_TIER, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Allocate a region in a specific GPU memory tier.
+     *
+     * The allocation result (handle + address) is available via
+     * PGL_REG_MEM_ALLOC_RESULT I2C register after the command is processed.
+     *
+     * @param tier  Target tier (PGL_TIER_AUTO not allowed).
+     * @param size  Bytes to allocate.
+     * @param tag   User-defined tag for identification/debug.
+     */
+    void MemAlloc(PglMemTier tier, uint32_t size, uint16_t tag = 0) {
+        PglCmdMemAlloc payload{};
+        payload.tier = static_cast<uint8_t>(tier);
+        payload.size = size;
+        payload.tag  = tag;
+        WriteCommand(PGL_CMD_MEM_ALLOC, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Free a previously allocated GPU memory region.
+     * @param handle  Handle returned by a prior MemAlloc (read via I2C).
+     */
+    void MemFree(PglMemHandle handle) {
+        PglCmdMemFree payload{};
+        payload.handle = handle;
+        WriteCommand(PGL_CMD_MEM_FREE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Request the GPU to capture a framebuffer snapshot for readback.
+     *
+     * The captured data is staged for I2C readback via PGL_REG_MEM_READ_DATA.
+     * At 400 kHz I2C, a 128×64 RGB565 framebuffer (16 KB) takes ~0.33 s.
+     * Intended for debug/screenshots, not real-time streaming.
+     *
+     * @param bufferSelect  0 = front buffer (currently displayed), 1 = back buffer.
+     * @param format        Output format (PGL_TEX_RGB565 or PGL_TEX_RGB888).
+     */
+    void FramebufferCapture(uint8_t bufferSelect = 0,
+                            PglTextureFormat format = PGL_TEX_RGB565) {
+        PglCmdFramebufferCapture payload{};
+        payload.bufferSelect = bufferSelect;
+        payload.format       = static_cast<uint8_t>(format);
+        WriteCommand(PGL_CMD_FRAMEBUFFER_CAPTURE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Copy a block of memory between GPU memory regions/tiers.
+     *
+     * Executes entirely on-GPU — no host data transfer needed.
+     * Useful for promoting/demoting data between tiers, or duplicating
+     * resources within the same tier.
+     *
+     * @param srcTier     Source memory tier.
+     * @param srcAddress  Source byte offset.
+     * @param dstTier     Destination memory tier.
+     * @param dstAddress  Destination byte offset.
+     * @param size        Bytes to copy.
+     */
+    void MemCopy(PglMemTier srcTier, uint32_t srcAddress,
+                 PglMemTier dstTier, uint32_t dstAddress, uint32_t size) {
+        PglCmdMemCopy payload{};
+        payload.srcTier    = static_cast<uint8_t>(srcTier);
+        payload.srcAddress = srcAddress;
+        payload.dstTier    = static_cast<uint8_t>(dstTier);
+        payload.dstAddress = dstAddress;
+        payload.size       = size;
+        WriteCommand(PGL_CMD_MEM_COPY, &payload, sizeof(payload));
     }
 
 private:
