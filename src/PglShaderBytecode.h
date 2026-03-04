@@ -38,6 +38,8 @@ static constexpr uint8_t PSB_FLAG_NEEDS_SCRATCH_COPY = 0x01;  // Shader reads fr
 
 // ─── Program Header (16 bytes) ──────────────────────────────────────────────
 
+#pragma pack(push, 1)
+
 struct PglShaderProgramHeader {
     uint32_t magic;          // Must be PSB_MAGIC (0x50534231)
     uint8_t  version;        // PSB_VERSION (1)
@@ -66,6 +68,8 @@ struct PglUniformDescriptor {
     uint16_t defaultValueOffset; // Byte offset into constants pool for default value
 };
 static_assert(sizeof(PglUniformDescriptor) == 8, "PglUniformDescriptor must be 8 bytes");
+
+#pragma pack(pop)
 
 // ─── Operand Encoding (8-bit) ───────────────────────────────────────────────
 //

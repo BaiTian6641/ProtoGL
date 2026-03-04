@@ -154,7 +154,7 @@ struct PglTransform {
     PglVec3  scaleOffset;            // Transform::scaleOffset
     PglVec3  rotationOffset;         // Transform::rotationOffset
 };
-static_assert(sizeof(PglTransform) == 100, "PglTransform must be 100 bytes");
+static_assert(sizeof(PglTransform) == 96, "PglTransform must be 96 bytes");
 
 // ─── Command Payloads ───────────────────────────────────────────────────────
 
@@ -183,7 +183,7 @@ struct PglCmdDrawObject {
     PglVec3  scaleOffset;
     PglVec3  rotationOffset;
 };
-static_assert(sizeof(PglCmdDrawObject) == 105, "PglCmdDrawObject must be 105 bytes");
+static_assert(sizeof(PglCmdDrawObject) == 101, "PglCmdDrawObject must be 101 bytes");
 
 enum PglDrawFlags : uint8_t {
     PGL_DRAW_ENABLED          = 0x01,
