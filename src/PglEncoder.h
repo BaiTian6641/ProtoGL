@@ -177,14 +177,150 @@ public:
         WriteRaw(vertices, vertDataSize);
     }
 
-    // ─── Effect ─────────────────────────────────────────────────────────
+    // ─── [SHADER:FUTURE] Shaders (Screen-Space Post-Processing) ──────
+    // These encode methods are complete and ready to use.
+    // GPUDriverController integration pending Effect RTTI — see [SHADER:FUTURE] block.
 
-    void SetEffect(PglCamera cameraId, uint8_t effectType, float ratio) {
-        PglCmdSetEffect payload{};
-        payload.cameraId  = cameraId;
-        payload.effectType = effectType;
-        payload.ratio      = ratio;
-        WriteCommand(PGL_CMD_SET_EFFECT, &payload, sizeof(payload));
+    /// Generic SetShader — caller fills params[] manually.
+    void SetShader(PglCamera cameraId, uint8_t shaderSlot,
+                   uint8_t shaderClass, float intensity,
+                   const void* params = nullptr, uint8_t paramSize = 0) {
+        PglCmdSetShader payload{};
+        payload.cameraId   = cameraId;
+        payload.shaderSlot = shaderSlot;
+        payload.shaderClass = shaderClass;
+        payload.intensity  = intensity;
+        if (params && paramSize > 0) {
+            if (paramSize > sizeof(payload.params)) paramSize = sizeof(payload.params);
+            std::memcpy(payload.params, params, paramSize);
+        }
+        WriteCommand(PGL_CMD_SET_SHADER, &payload, sizeof(payload));
+    }
+
+    /// Clear a shader slot (sets class to PGL_SHADER_NONE).
+    void ClearShader(PglCamera cameraId, uint8_t shaderSlot) {
+        SetShader(cameraId, shaderSlot, PGL_SHADER_NONE, 0.0f);
+    }
+
+    // ── Convolution Shader Helpers ──────────────────────────────────────
+
+    /// Convolution shader — fully parameterised.
+    void SetConvolution(PglCamera cameraId, uint8_t slot, float intensity,
+                        PglKernelShape kernel, uint8_t radius,
+                        bool separable, float angleDeg,
+                        float anglePeriod = 0.0f, float sigma = 0.0f) {
+        PglShaderParamsConvolution p{};
+        p.kernelShape  = kernel;
+        p.radius       = radius;
+        p.separable    = separable ? 1 : 0;
+        p.angle        = angleDeg;
+        p.anglePeriod  = anglePeriod;
+        p.sigma        = sigma;
+        SetShader(cameraId, slot, PGL_SHADER_CONVOLUTION, intensity, &p, sizeof(p));
+    }
+
+    /// Convenience: Horizontal blur (angle=0°, box kernel).
+    void SetHorizontalBlur(PglCamera cameraId, uint8_t slot, float intensity, uint8_t radius) {
+        SetConvolution(cameraId, slot, intensity, PGL_KERNEL_BOX, radius, false, 0.0f);
+    }
+
+    /// Convenience: Vertical blur (angle=90°, box kernel).
+    void SetVerticalBlur(PglCamera cameraId, uint8_t slot, float intensity, uint8_t radius) {
+        SetConvolution(cameraId, slot, intensity, PGL_KERNEL_BOX, radius, false, 90.0f);
+    }
+
+    /// Convenience: Radial blur (auto-rotating angle, box kernel).
+    void SetRadialBlur(PglCamera cameraId, uint8_t slot, float intensity,
+                       uint8_t radius, float rotationPeriod = 3.7f) {
+        SetConvolution(cameraId, slot, intensity, PGL_KERNEL_BOX, radius, false,
+                       0.0f, rotationPeriod);
+    }
+
+    /// Convenience: Anti-aliasing (separable 2D, 4-neighbour smoothing).
+    void SetAntiAliasing(PglCamera cameraId, uint8_t slot, float intensity,
+                         float smoothing = 0.25f) {
+        SetConvolution(cameraId, slot, intensity, PGL_KERNEL_BOX, 1, true,
+                       0.0f, 0.0f, smoothing);
+    }
+
+    // ── Displacement Shader Helpers ─────────────────────────────────────
+
+    /// Displacement shader — fully parameterised.
+    void SetDisplacement(PglCamera cameraId, uint8_t slot, float intensity,
+                         PglDisplacementAxis axis, bool perChannel,
+                         uint8_t amplitude, PglWaveform waveform,
+                         float period, float frequency = 1.0f,
+                         float phase1Period = 0.0f, float phase2Period = 0.0f) {
+        PglShaderParamsDisplacement p{};
+        p.axis        = axis;
+        p.perChannel  = perChannel ? 1 : 0;
+        p.amplitude   = amplitude;
+        p.waveform    = waveform;
+        p.period      = period;
+        p.frequency   = frequency;
+        p.phase1Period = phase1Period;
+        p.phase2Period = phase2Period;
+        SetShader(cameraId, slot, PGL_SHADER_DISPLACEMENT, intensity, &p, sizeof(p));
+    }
+
+    /// Convenience: Horizontal chromatic aberration (PhaseOffsetX).
+    void SetPhaseOffsetX(PglCamera cameraId, uint8_t slot, float intensity,
+                         uint8_t amplitude, float period = 3.5f) {
+        SetDisplacement(cameraId, slot, intensity, PGL_AXIS_X, true,
+                        amplitude, PGL_WAVE_SINE, period);
+    }
+
+    /// Convenience: Vertical chromatic aberration (PhaseOffsetY).
+    void SetPhaseOffsetY(PglCamera cameraId, uint8_t slot, float intensity,
+                         uint8_t amplitude, float period = 3.5f) {
+        SetDisplacement(cameraId, slot, intensity, PGL_AXIS_Y, true,
+                        amplitude, PGL_WAVE_SINE, period);
+    }
+
+    /// Convenience: Radial chromatic aberration (PhaseOffsetR).
+    void SetPhaseOffsetR(PglCamera cameraId, uint8_t slot, float intensity,
+                         uint8_t amplitude, float rotPeriod = 3.7f,
+                         float phase1Period = 4.5f, float phase2Period = 3.2f) {
+        SetDisplacement(cameraId, slot, intensity, PGL_AXIS_RADIAL, true,
+                        amplitude, PGL_WAVE_SINE, rotPeriod, 1.0f,
+                        phase1Period, phase2Period);
+    }
+
+    // ── Color Adjust Shader Helpers ─────────────────────────────────────
+
+    /// Color adjust shader — fully parameterised.
+    void SetColorAdjust(PglCamera cameraId, uint8_t slot, float intensity,
+                        PglColorAdjustOp operation, float strength,
+                        float param2 = 0.0f) {
+        PglShaderParamsColorAdjust p{};
+        p.operation = operation;
+        p.strength  = strength;
+        p.param2    = param2;
+        SetShader(cameraId, slot, PGL_SHADER_COLOR_ADJUST, intensity, &p, sizeof(p));
+    }
+
+    /// Convenience: Edge feathering (dims edges adjacent to black pixels).
+    void SetEdgeFeather(PglCamera cameraId, uint8_t slot, float intensity,
+                        float featherStrength = 0.5f) {
+        SetColorAdjust(cameraId, slot, intensity, PGL_COLOR_EDGE_FEATHER, featherStrength);
+    }
+
+    /// Convenience: Brightness adjustment.
+    void SetBrightness(PglCamera cameraId, uint8_t slot, float intensity,
+                       float brightness) {
+        SetColorAdjust(cameraId, slot, intensity, PGL_COLOR_BRIGHTNESS, brightness);
+    }
+
+    /// Convenience: Contrast adjustment.
+    void SetContrast(PglCamera cameraId, uint8_t slot, float intensity,
+                     float contrast) {
+        SetColorAdjust(cameraId, slot, intensity, PGL_COLOR_CONTRAST, contrast);
+    }
+
+    /// Convenience: Gamma correction.
+    void SetGamma(PglCamera cameraId, uint8_t slot, float intensity,
+                  float gammaExponent = 2.2f) {
+        SetColorAdjust(cameraId, slot, intensity, PGL_COLOR_GAMMA, 1.0f, gammaExponent);
     }
 
     // ─── Mesh Resources ─────────────────────────────────────────────────

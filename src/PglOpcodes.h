@@ -33,5 +33,5 @@ static constexpr uint8_t PGL_CMD_SET_PIXEL_LAYOUT         = 0x20;
 static constexpr uint8_t PGL_CMD_BEGIN_FRAME              = 0x80;
 static constexpr uint8_t PGL_CMD_DRAW_OBJECT              = 0x81;
 static constexpr uint8_t PGL_CMD_SET_CAMERA               = 0x82;
-static constexpr uint8_t PGL_CMD_SET_EFFECT               = 0x83;
+static constexpr uint8_t PGL_CMD_SET_SHADER               = 0x83;
 static constexpr uint8_t PGL_CMD_END_FRAME                = 0x8F;

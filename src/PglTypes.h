@@ -157,11 +157,116 @@ struct PglCmdSetCamera {
 };
 static_assert(sizeof(PglCmdSetCamera) == 75, "PglCmdSetCamera must be 75 bytes");
 
-// CMD_SET_EFFECT (0x83)
-struct PglCmdSetEffect {
-    uint8_t cameraId;
-    uint8_t effectType;
-    float   ratio;
+// ─── Screen-Space Shader System ─────────────────────────────────────────────
+//
+// General-purpose screen-space post-processing.  Instead of hardcoded effect
+// types, the API exposes three shader *classes* — CONVOLUTION, DISPLACEMENT,
+// COLOR_ADJUST — each parameterised to express many effects (including all
+// original ProtoTracer effects) without future API changes.
+
+// ── [SHADER:FUTURE] Shader Classes ──────────────────────────────────────────
+// These types define the GPU-side post-processing shader system.
+// Host-side encoding is stubbed; see GPUDriverController.h [SHADER:FUTURE] block.
+
+enum PglShaderClass : uint8_t {
+    PGL_SHADER_NONE         = 0x00,
+    PGL_SHADER_CONVOLUTION  = 0x01,  // blur / smooth / sharpen via configurable kernel
+    PGL_SHADER_DISPLACEMENT = 0x02,  // coordinate-space warp (chromatic aberration, etc.)
+    PGL_SHADER_COLOR_ADJUST = 0x03,  // per-pixel color transform (feather, gamma, etc.)
+};
+
+// ── Supporting Enums ────────────────────────────────────────────────────────
+
+/// Kernel shape for CONVOLUTION shaders.
+enum PglKernelShape : uint8_t {
+    PGL_KERNEL_BOX      = 0x00,  // equal-weight neighbours
+    PGL_KERNEL_GAUSSIAN = 0x01,  // exp(-d²/2σ²) weighting
+    PGL_KERNEL_TRIANGLE = 0x02,  // linearly decreasing weights
+};
+
+/// Waveform for DISPLACEMENT oscillators.
+enum PglWaveform : uint8_t {
+    PGL_WAVE_SAWTOOTH = 0x00,
+    PGL_WAVE_SINE     = 0x01,
+    PGL_WAVE_TRIANGLE = 0x02,
+    PGL_WAVE_SQUARE   = 0x03,
+};
+
+/// Axis for DISPLACEMENT shaders.
+enum PglDisplacementAxis : uint8_t {
+    PGL_AXIS_X      = 0x00,  // horizontal
+    PGL_AXIS_Y      = 0x01,  // vertical
+    PGL_AXIS_RADIAL = 0x02,  // from center
+};
+
+/// Operation for COLOR_ADJUST shaders.
+enum PglColorAdjustOp : uint8_t {
+    PGL_COLOR_EDGE_FEATHER  = 0x00,  // dim pixels adjacent to black
+    PGL_COLOR_THRESHOLD     = 0x01,  // binary threshold at strength
+    PGL_COLOR_GAMMA         = 0x02,  // pow(c, param2)
+    PGL_COLOR_INVERT        = 0x03,  // 1-c
+    PGL_COLOR_BRIGHTNESS    = 0x04,  // c + strength
+    PGL_COLOR_CONTRAST      = 0x05,  // (c - 0.5) * strength + 0.5
+    PGL_COLOR_EDGE_DETECT   = 0x06,  // Sobel edge detection
+};
+
+static constexpr uint8_t PGL_MAX_SHADERS_PER_CAMERA = 4;
+
+// ── Per-Class Parameter Structs ─────────────────────────────────────────────
+//
+// Each struct is stored in PglCmdSetShader::params[20].
+// Structs are <= 20 bytes; unused trailing bytes are zero.
+
+/// CONVOLUTION parameters.
+///   angle=0°→ horizontal, angle=90°→ vertical, anglePeriod>0→ auto-rotate
+///   separable=1 → 2D kernel (4-neighbour), else 1D directional kernel
+struct PglShaderParamsConvolution {
+    uint8_t kernelShape;    // PglKernelShape
+    uint8_t radius;         // kernel half-width in pixels (1-32)
+    uint8_t separable;      // 0 = 1D directional, 1 = 2D separable (4-neighbour)
+    uint8_t _pad;
+    float   angle;          // direction angle in degrees (0 = horizontal, 90 = vertical)
+    float   anglePeriod;    // if > 0, angle auto-rotates with this period (seconds)
+    float   sigma;          // gaussian σ (only when kernelShape = GAUSSIAN), or
+                            // smoothing weight for separable mode (0.0–1.0)
+};
+static_assert(sizeof(PglShaderParamsConvolution) == 16, "PglShaderParamsConvolution must be 16 bytes");
+
+/// DISPLACEMENT parameters.
+///   Shifts sample coordinates per a wave function.  When perChannel=1,
+///   R/G/B channels are displaced separately → chromatic aberration.
+struct PglShaderParamsDisplacement {
+    uint8_t axis;           // PglDisplacementAxis
+    uint8_t perChannel;     // 0 = uniform, 1 = chromatic split (R/G/B 120° apart)
+    uint8_t amplitude;      // max displacement in pixels (1-32)
+    uint8_t waveform;       // PglWaveform
+    float   period;         // primary oscillator period (seconds), 0 = static
+    float   frequency;      // spatial frequency multiplier (default 1.0)
+    float   phase1Period;   // secondary oscillator (radial mode)
+    float   phase2Period;   // tertiary oscillator (radial mode)
+};
+static_assert(sizeof(PglShaderParamsDisplacement) == 20, "PglShaderParamsDisplacement must be 20 bytes");
+
+/// COLOR_ADJUST parameters.
+///   Modifies per-pixel colour.  `operation` selects the transform;
+///   `strength` and `param2` are operation-specific.
+struct PglShaderParamsColorAdjust {
+    uint8_t operation;      // PglColorAdjustOp
+    uint8_t _pad[3];
+    float   strength;       // primary control (meaning varies per operation)
+    float   param2;         // secondary control (gamma exponent, etc.)
+};
+static_assert(sizeof(PglShaderParamsColorAdjust) == 12, "PglShaderParamsColorAdjust must be 12 bytes");
+
+// ── Wire Command ────────────────────────────────────────────────────────────
+
+// CMD_SET_SHADER (0x83) — general screen-space shader slot assignment
+struct PglCmdSetShader {
+    uint8_t cameraId;       // which camera this shader applies to
+    uint8_t shaderSlot;     // 0..PGL_MAX_SHADERS_PER_CAMERA-1, applied in order
+    uint8_t shaderClass;    // PglShaderClass enum
+    float   intensity;      // global mix factor (0.0 = bypass, 1.0 = full)
+    uint8_t params[20];     // class-specific parameters (see PglShaderParams*)
 };
 
 // CMD_CREATE_MESH (0x01) — header only; variable-length arrays follow

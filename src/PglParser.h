@@ -124,10 +124,9 @@ inline int32_t PglFindSyncWord(const uint8_t* data, size_t length) {
  * @param frameStart  Pointer to the first byte of the frame header (sync word).
  * @param totalLength The totalLength field from the frame header (includes CRC).
  * @return true if the CRC matches.
- *
- * Requires PglCRC16.h to be included before this header if you use this function.
  */
-#ifdef PGL_CRC16_H_INCLUDED
+#include "PglCRC16.h"
+
 inline bool PglValidateFrameCRC(const uint8_t* frameStart, uint32_t totalLength) {
     if (totalLength < 14) return false; // header(12) + CRC(2) minimum
     const uint32_t dataLen = totalLength - 2;
@@ -136,5 +135,4 @@ inline bool PglValidateFrameCRC(const uint8_t* frameStart, uint32_t totalLength)
     std::memcpy(&stored, frameStart + dataLen, 2);
     return computed == stored;
 }
-#endif
 
