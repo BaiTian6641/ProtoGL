@@ -1,0 +1,31 @@
+// hue_shift.pglsl — Rotate hue by a uniform amount
+// Uniform: u_angle (float, rotation in radians, 0..6.28)
+// Uses RGB→HSV-like rotation approximation (fast, GPU-friendly)
+
+uniform float u_angle;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec4 color = texture2D(u_framebuffer, uv);
+
+    float cosA = cos(u_angle);
+    float sinA = sin(u_angle);
+
+    // Approximate hue rotation via channel mixing matrix
+    // R' = R * (0.299 + 0.701*cos - 0.168*sin) + G * (0.587 - 0.587*cos + 0.330*sin) + B * (0.114 - 0.114*cos - 0.497*sin)
+    float r = color.r;
+    float g = color.g;
+    float b = color.b;
+
+    float rr = r * (0.299 + 0.701 * cosA + 0.168 * sinA)
+             + g * (0.587 - 0.587 * cosA + 0.330 * sinA)
+             + b * (0.114 - 0.114 * cosA - 0.497 * sinA);
+    float gg = r * (0.299 - 0.299 * cosA - 0.328 * sinA)
+             + g * (0.587 + 0.413 * cosA + 0.035 * sinA)
+             + b * (0.114 - 0.114 * cosA + 0.292 * sinA);
+    float bb = r * (0.299 - 0.300 * cosA + 1.250 * sinA)
+             + g * (0.587 - 0.588 * cosA - 1.050 * sinA)
+             + b * (0.114 + 0.886 * cosA - 0.203 * sinA);
+
+    gl_FragColor = vec4(rr, gg, bb, 1.0);
+}

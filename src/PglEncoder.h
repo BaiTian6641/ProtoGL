@@ -323,6 +323,112 @@ public:
         SetColorAdjust(cameraId, slot, intensity, PGL_COLOR_GAMMA, 1.0f, gammaExponent);
     }
 
+    // ─── Programmable Shader Programs (v0.6) ────────────────────────────
+
+    /**
+     * @brief Upload a compiled shader program (PSB bytecode) to the GPU.
+     * @param programId     GPU-side handle (0–PGL_MAX_SHADER_PROGRAMS-1).
+     * @param bytecodeBlob  Pointer to the complete PSB binary (header + descriptors + constants + instructions).
+     * @param bytecodeSize  Size of the PSB binary in bytes.
+     */
+    void CreateShaderProgram(uint16_t programId,
+                             const void* bytecodeBlob, uint16_t bytecodeSize) {
+        PglCmdCreateShaderProgramHeader hdr{};
+        hdr.programId    = programId;
+        hdr.bytecodeSize = bytecodeSize;
+
+        const uint16_t totalPayload = sizeof(hdr) + bytecodeSize;
+        WriteCommandHeader(PGL_CMD_CREATE_SHADER_PROGRAM, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(bytecodeBlob, bytecodeSize);
+    }
+
+    /**
+     * @brief Destroy a previously uploaded shader program.
+     * @param programId  GPU-side handle to destroy.
+     */
+    void DestroyShaderProgram(uint16_t programId) {
+        PglCmdDestroyShaderProgram payload{};
+        payload.programId = programId;
+        WriteCommand(PGL_CMD_DESTROY_SHADER_PROGRAM, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Bind a compiled shader program to a camera's shader slot.
+     *
+     * This replaces the old SetShader() for programmable effects. The existing
+     * SetShader()/SetConvolution()/etc. still work for built-in shader classes.
+     *
+     * @param cameraId   Target camera.
+     * @param shaderSlot Slot index (0–3).
+     * @param programId  Program handle (0xFFFF = unbind / clear slot).
+     * @param intensity  Global mix factor (0.0 = bypass, 1.0 = full effect).
+     */
+    void BindShaderProgram(PglCamera cameraId, uint8_t shaderSlot,
+                           uint16_t programId, float intensity) {
+        PglCmdBindShaderProgram payload{};
+        payload.cameraId   = cameraId;
+        payload.shaderSlot = shaderSlot;
+        payload.programId  = programId;
+        payload.intensity  = intensity;
+        WriteCommand(PGL_CMD_BIND_SHADER_PROGRAM, &payload, sizeof(payload));
+    }
+
+    /// Set a float uniform on a loaded shader program.
+    void SetShaderUniform(uint16_t programId, uint8_t uniformSlot,
+                          float value) {
+        PglCmdSetShaderUniformHeader hdr{};
+        hdr.programId      = programId;
+        hdr.uniformSlot    = uniformSlot;
+        hdr.componentCount = 1;
+        const uint16_t totalPayload = sizeof(hdr) + sizeof(float);
+        WriteCommandHeader(PGL_CMD_SET_SHADER_UNIFORM, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(&value, sizeof(float));
+    }
+
+    /// Set a vec2 uniform on a loaded shader program.
+    void SetShaderUniform(uint16_t programId, uint8_t uniformSlot,
+                          float x, float y) {
+        PglCmdSetShaderUniformHeader hdr{};
+        hdr.programId      = programId;
+        hdr.uniformSlot    = uniformSlot;
+        hdr.componentCount = 2;
+        float vals[2] = {x, y};
+        const uint16_t totalPayload = sizeof(hdr) + 2 * sizeof(float);
+        WriteCommandHeader(PGL_CMD_SET_SHADER_UNIFORM, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(vals, sizeof(vals));
+    }
+
+    /// Set a vec3 uniform on a loaded shader program.
+    void SetShaderUniform(uint16_t programId, uint8_t uniformSlot,
+                          float x, float y, float z) {
+        PglCmdSetShaderUniformHeader hdr{};
+        hdr.programId      = programId;
+        hdr.uniformSlot    = uniformSlot;
+        hdr.componentCount = 3;
+        float vals[3] = {x, y, z};
+        const uint16_t totalPayload = sizeof(hdr) + 3 * sizeof(float);
+        WriteCommandHeader(PGL_CMD_SET_SHADER_UNIFORM, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(vals, sizeof(vals));
+    }
+
+    /// Set a vec4 uniform on a loaded shader program.
+    void SetShaderUniform(uint16_t programId, uint8_t uniformSlot,
+                          float x, float y, float z, float w) {
+        PglCmdSetShaderUniformHeader hdr{};
+        hdr.programId      = programId;
+        hdr.uniformSlot    = uniformSlot;
+        hdr.componentCount = 4;
+        float vals[4] = {x, y, z, w};
+        const uint16_t totalPayload = sizeof(hdr) + 4 * sizeof(float);
+        WriteCommandHeader(PGL_CMD_SET_SHADER_UNIFORM, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(vals, sizeof(vals));
+    }
+
     // ─── Mesh Resources ─────────────────────────────────────────────────
 
     void CreateMesh(PglMesh meshId,

@@ -78,7 +78,7 @@ while (ptr < end) {
 
 ## Status
 
-- **v0.5.0** — GPU memory access API: 7 new SPI commands (0x30–0x3F) for direct memory read/write across all tiers (SRAM, OPI PSRAM, QSPI PSRAM). 4 new I2C registers (0x0C–0x0F) for tier info, readback, and allocation status. Framebuffer capture for screenshots. Backward-compatible with v0.3 wire format.
+- **v0.5.0** — GPU memory access API: 7 new SPI commands (0x30–0x3F) for direct memory read/write across all tiers (SRAM, OPI PSRAM, QSPI MRAM). 4 new I2C registers (0x0C–0x0F) for tier info, readback, and allocation status. Framebuffer capture for screenshots. Backward-compatible with v0.3 wire format.
 - **v0.4.0** — M4 rasterizer fully implemented on GPU side: vertex transform, perspective/ortho projection, QuadTree spatial indexing, per-pixel barycentric rasterization with Z-buffer, SimpleMaterial evaluation. Dual-core parallel RasterizeRange.
 - **v0.3.1** — General shader system: 3 shader classes (CONVOLUTION, DISPLACEMENT, COLOR_ADJUST) replacing 8 hardcoded effects. Animated oscillator waveforms.
 - **v0.3.0** — Wire format frozen (backward-compatible with v0.2). Architecture-agnostic: GPU capability query, `PglParser.h` for alignment-safe deserialization, `PglGpuArch` enum.

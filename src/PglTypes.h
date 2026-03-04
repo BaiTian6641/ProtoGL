@@ -32,9 +32,29 @@ static constexpr PglLayout   PGL_INVALID_LAYOUT    = 0xFF;
 /// Memory tier identifier — selects which physical memory to target.
 enum PglMemTier : uint8_t {
     PGL_TIER_SRAM       = 0,   // Tier 0: On-chip SRAM (520 KB, 1-cycle)
-    PGL_TIER_OPI_PSRAM  = 1,   // Tier 1: OPI PSRAM via PIO2 (APS6408L, ~150 MB/s)
-    PGL_TIER_QSPI_PSRAM = 2,   // Tier 2: QSPI PSRAM via QMI CS1 (XIP, ~75 MB/s)
+    PGL_TIER_OPI_PSRAM  = 1,   // Tier 1: PIO2 external memory (OPI PSRAM or QSPI MRAM)
+    PGL_TIER_QSPI_PSRAM = 2,   // Tier 2: QSPI memory via QMI CS1 (MRAM or PSRAM, XIP)
     PGL_TIER_AUTO       = 0xFF, // Let GPU decide (tiering manager)
+};
+
+/// PIO2 external memory operating mode (reported in extended status).
+/// Selects the bus width and chip configuration for Tier 1.
+enum PglPio2MemMode : uint8_t {
+    PGL_PIO2_MODE_NONE              = 0,   // PIO2 not used for external memory
+    PGL_PIO2_MODE_OPI_PSRAM         = 1,   // 8-bit OPI: APS6408L (8 MB)
+    PGL_PIO2_MODE_DUAL_QSPI_MRAM   = 2,   // 4-bit QSPI × 2: MR10Q010 (256 KB)
+    PGL_PIO2_MODE_SINGLE_QSPI_MRAM = 3,   // 4-bit QSPI × 1: MR10Q010 (128 KB)
+};
+
+/// Chip type detected on GPU's QSPI CS1 slot (reported in extended status).
+/// Determines memory tier placement policy: MRAM has no random-access penalty,
+/// enabling more aggressive demotion of LUTs/materials/textures from SRAM.
+enum PglQspiChipType : uint8_t {
+    PGL_QSPI_CHIP_NONE           = 0,     // CS1 unpopulated
+    PGL_QSPI_CHIP_MRAM_MR10Q010  = 1,     // 128 KB MRAM, no random-access penalty
+    PGL_QSPI_CHIP_PSRAM_APS6408L = 2,     // 8 MB PSRAM, row-buffer miss penalty
+    PGL_QSPI_CHIP_PSRAM_ESP      = 3,     // 8 MB PSRAM, row-buffer miss penalty
+    PGL_QSPI_CHIP_UNKNOWN        = 0xFE,  // Responded but unrecognized
 };
 
 /// Opaque handle for GPU-side memory allocations.
@@ -199,6 +219,7 @@ enum PglShaderClass : uint8_t {
     PGL_SHADER_CONVOLUTION  = 0x01,  // blur / smooth / sharpen via configurable kernel
     PGL_SHADER_DISPLACEMENT = 0x02,  // coordinate-space warp (chromatic aberration, etc.)
     PGL_SHADER_COLOR_ADJUST = 0x03,  // per-pixel color transform (feather, gamma, etc.)
+    PGL_SHADER_PROGRAM      = 0x04,  // programmable bytecode shader (PSB VM)
 };
 
 // ── Supporting Enums ────────────────────────────────────────────────────────
@@ -294,6 +315,43 @@ struct PglCmdSetShader {
     float   intensity;      // global mix factor (0.0 = bypass, 1.0 = full)
     uint8_t params[20];     // class-specific parameters (see PglShaderParams*)
 };
+
+// ── Programmable Shader Commands (v0.6) ─────────────────────────────────────
+
+// CMD_CREATE_SHADER_PROGRAM (0x84) — header; followed by PSB bytecode blob
+struct PglCmdCreateShaderProgramHeader {
+    uint16_t programId;     // GPU-side handle (0–PGL_MAX_SHADER_PROGRAMS-1)
+    uint16_t bytecodeSize;  // Total size of PSB blob following this header
+};
+
+// CMD_DESTROY_SHADER_PROGRAM (0x85)
+struct PglCmdDestroyShaderProgram {
+    uint16_t programId;
+};
+
+// CMD_BIND_SHADER_PROGRAM (0x86)
+// Assigns a compiled program to a camera's shader slot.
+// The existing CMD_SET_SHADER (0x83) continues to work for built-in classes.
+struct PglCmdBindShaderProgram {
+    uint8_t  cameraId;
+    uint8_t  shaderSlot;
+    uint16_t programId;      // 0xFFFF = unbind (clear slot)
+    float    intensity;      // global mix factor (0.0 = bypass, 1.0 = full)
+};
+
+// CMD_SET_SHADER_UNIFORM (0x87) — header; followed by componentCount × float
+struct PglCmdSetShaderUniformHeader {
+    uint16_t programId;
+    uint8_t  uniformSlot;    // 0–15
+    uint8_t  componentCount; // 1=float, 2=vec2, 3=vec3, 4=vec4
+    // Followed by: componentCount × float (4–16 bytes)
+};
+
+// Capability flag for shader VM support
+static constexpr uint32_t PGL_CAP_SHADER_VM = (1u << 8);
+
+// Maximum number of loaded shader programs on the GPU
+static constexpr uint8_t PGL_MAX_SHADER_PROGRAMS = 16;
 
 // CMD_CREATE_MESH (0x01) — header only; variable-length arrays follow
 struct PglCmdCreateMeshHeader {
@@ -666,9 +724,9 @@ struct PglExtendedStatusResponse {
 
     // Memory (bytes 12–19)
     uint16_t sramFreeKB;        // Free internal SRAM in KB
-    uint16_t opiVramTotalKB;    // OPI PSRAM total (0 if not present)
-    uint16_t opiVramFreeKB;     // OPI PSRAM free
-    uint16_t qspiVramTotalKB;   // QSPI PSRAM total (0 if not present)
+    uint16_t opiVramTotalKB;    // PIO2 external memory total (OPI PSRAM or QSPI MRAM, 0 if not present)
+    uint16_t opiVramFreeKB;     // PIO2 external memory free
+    uint16_t qspiVramTotalKB;   // QSPI VRAM total (MRAM or PSRAM, 0 if not present)
 
     // Frame timing (bytes 20–27)
     uint16_t frameTimeUs;       // Last frame time in microseconds
@@ -677,19 +735,19 @@ struct PglExtendedStatusResponse {
     uint16_t hub75RefreshHz;    // HUB75 display refresh rate
 
     // Counters (bytes 28–31)
-    uint16_t qspiVramFreeKB;    // QSPI PSRAM free
+    uint16_t qspiVramFreeKB;    // QSPI VRAM free
     uint8_t  vramTierFlags;     // bit0: OPI detected, bit1: QSPI detected,
                                 // bit2: OPI initialised, bit3: QSPI initialised
-    uint8_t  reserved;
+    uint8_t  qspiChipType;      // PglQspiChipType — detected chip on CS1
 };
 static_assert(sizeof(PglExtendedStatusResponse) == 32, "PglExtendedStatusResponse must be 32 bytes");
 
 /// GPU VRAM tier presence flags (PglExtendedStatusResponse::vramTierFlags)
 enum PglVramTierFlags : uint8_t {
-    PGL_VRAM_OPI_DETECTED    = 0x01,  // OPI PSRAM chip responded to read-ID
-    PGL_VRAM_QSPI_DETECTED   = 0x02,  // QSPI PSRAM chip responded to read-ID
-    PGL_VRAM_OPI_INITIALISED  = 0x04,  // OPI PSRAM driver fully initialised
-    PGL_VRAM_QSPI_INITIALISED = 0x08,  // QSPI PSRAM driver fully initialised
+    PGL_VRAM_OPI_DETECTED    = 0x01,  // PIO2 external memory detected (OPI PSRAM or QSPI MRAM)
+    PGL_VRAM_QSPI_DETECTED   = 0x02,  // QSPI chip responded to RDID (MRAM 0x4B or PSRAM 0x9F)
+    PGL_VRAM_OPI_INITIALISED  = 0x04,  // PIO2 external memory driver fully initialised
+    PGL_VRAM_QSPI_INITIALISED = 0x08,  // QSPI CS1 driver fully initialised (MRAM or PSRAM)
 };
 
 /// Clock change request — written to PGL_REG_SET_CLOCK_FREQ (0x10)
@@ -728,8 +786,8 @@ enum PglCapabilityFlags : uint8_t {
     PGL_CAP_UNALIGNED_ACCESS = 0x02,  // Safe unaligned loads (ARM CM33)
     PGL_CAP_DSP              = 0x04,  // DSP extension (ARM DSP, RISC-V P)
     PGL_CAP_SIMD             = 0x08,  // SIMD extension (Helium, RISC-V V)
-    PGL_CAP_OPI_VRAM         = 0x10,  // OPI PSRAM detected on PIO2
-    PGL_CAP_QSPI_VRAM        = 0x20,  // QSPI PSRAM detected on QMI CS1
+    PGL_CAP_OPI_VRAM         = 0x10,  // PIO2 external memory detected (OPI PSRAM or QSPI MRAM)
+    PGL_CAP_QSPI_VRAM        = 0x20,  // QSPI memory detected on QMI CS1 (MRAM or PSRAM)
     PGL_CAP_DYNAMIC_CLOCK    = 0x40,  // Supports runtime clock adjustment
     PGL_CAP_TEMP_SENSOR      = 0x80,  // On-chip temperature sensor available
 };
@@ -742,14 +800,14 @@ struct PglMemTierInfoResponse {
     // Tier 0 — SRAM
     uint16_t sramTotalKB;       // Total SRAM available for GPU use
     uint16_t sramFreeKB;        // Free SRAM
-    // Tier 1 — OPI PSRAM
-    uint16_t opiTotalKB;        // Total OPI PSRAM (0 if not present)
-    uint16_t opiFreeKB;         // Free OPI PSRAM
-    uint8_t  opiEnabled;        // 1 if OPI PSRAM driver initialized
-    // Tier 2 — QSPI PSRAM
-    uint16_t qspiTotalKB;       // Total QSPI PSRAM (0 if not present)
-    uint16_t qspiFreeKB;        // Free QSPI PSRAM
-    uint8_t  qspiEnabled;       // 1 if QSPI PSRAM driver initialized
+    // Tier 1 — PIO2 external memory (OPI PSRAM or QSPI MRAM)
+    uint16_t opiTotalKB;        // Total PIO2 memory (0 if not present)
+    uint16_t opiFreeKB;         // Free PIO2 memory
+    uint8_t  opiEnabled;        // 1 if PIO2 external memory driver initialized
+    // Tier 2 — QSPI CS1 (auto-detected: MRAM or PSRAM)
+    uint16_t qspiTotalKB;       // Total QSPI memory (0 if not present)
+    uint16_t qspiFreeKB;        // Free QSPI memory
+    uint8_t  qspiEnabled;       // 1 if QSPI CS1 driver initialized
     // Cache / tiering stats
     uint16_t cachedEntries;      // Number of entries in SRAM cache arena
     uint16_t totalManagedAllocs; // Total allocations tracked by tier manager

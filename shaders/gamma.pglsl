@@ -1,0 +1,15 @@
+// gamma.pglsl — Power-curve gamma correction
+// Uniform: u_gamma (float, typical 2.2 for display correction)
+
+uniform float u_gamma;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec4 color = texture2D(u_framebuffer, uv);
+    vec3 corrected = vec3(
+        pow(color.r, u_gamma),
+        pow(color.g, u_gamma),
+        pow(color.b, u_gamma)
+    );
+    gl_FragColor = vec4(corrected, 1.0);
+}

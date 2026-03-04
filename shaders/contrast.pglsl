@@ -1,0 +1,11 @@
+// contrast.pglsl — Contrast adjustment around midpoint
+// Uniform: u_contrast (float, 0.0 = flat grey, 1.0 = normal, 2.0 = double contrast)
+
+uniform float u_contrast;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec4 color = texture2D(u_framebuffer, uv);
+    vec3 adjusted = (color.rgb - vec3(0.5)) * u_contrast + vec3(0.5);
+    gl_FragColor = vec4(adjusted, 1.0);
+}

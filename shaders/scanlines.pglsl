@@ -1,0 +1,17 @@
+// scanlines.pglsl — CRT-style horizontal scanlines
+// Uniform: u_density (float, line spacing — 2.0 = every other line)
+// Uniform: u_darkness (float, 0.0 = invisible, 1.0 = fully black lines)
+
+uniform float u_density;
+uniform float u_darkness;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec4 color = texture2D(u_framebuffer, uv);
+
+    float line = fract(gl_FragCoord.y * u_density * 0.5);
+    float scanline = step(0.5, line);
+    float factor = mix(1.0, scanline, u_darkness);
+
+    gl_FragColor = vec4(color.rgb * factor, 1.0);
+}

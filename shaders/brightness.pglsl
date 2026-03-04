@@ -1,0 +1,10 @@
+// brightness.pglsl — Additive brightness adjustment
+// Uniform: u_brightness (float, -1.0 to 1.0)
+
+uniform float u_brightness;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec4 color = texture2D(u_framebuffer, uv);
+    gl_FragColor = vec4(color.rgb + vec3(u_brightness), 1.0);
+}

@@ -1,0 +1,14 @@
+// vignette.pglsl — Radial darkening toward edges
+// Uniform: u_strength (float, 0.0 = no effect, 1.0 = heavy vignette)
+
+uniform float u_strength;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec2 center = vec2(0.5, 0.5);
+    float dist = length(uv - center) * 1.414;
+    float vignette = mix(1.0, 1.0 - dist * dist, u_strength);
+
+    vec4 color = texture2D(u_framebuffer, uv);
+    gl_FragColor = vec4(color.rgb * vignette, 1.0);
+}
