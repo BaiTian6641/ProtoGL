@@ -348,6 +348,11 @@ struct PglCmdSetShaderUniformHeader {
 };
 
 // Capability flag for shader VM support
+// NOTE: This is defined as bit 8 (0x100), which exceeds the capacity of the
+// current `PglCapabilityResponse.flags` uint8_t field.  All 8 bits of that
+// field are already allocated (0x01–0x80).  A future protocol version should
+// widen `flags` to uint16_t (requiring a struct layout change and version bump)
+// to accommodate this and additional capability bits.
 static constexpr uint32_t PGL_CAP_SHADER_VM = (1u << 8);
 
 // Maximum number of loaded shader programs on the GPU

@@ -22,7 +22,8 @@ The host MCU (e.g., ESP32-S3) records draw commands into a linear byte buffer us
 | `PglCRC16.h` | CRC-16/CCITT for frame integrity |
 | `PglEncoder.h` | Command buffer encoder (records commands into byte array) — host side |
 | `PglParser.h` | Alignment-safe command buffer parser utilities — GPU side (safe on RISC-V) |
-| `PglDevice.h` | Device manager (buffer lifecycle, DMA transport, I2C config) — host side |
+| `PglDevice.h` | Device manager (SPI data plane + I2C management bus, DMA transport) — host side |
+| `PglShaderBackend.h` | Shader math backend (trig, vector, texture sampling) — GPU side, auto-selects FPv5/DSP |
 
 ## Quick Start
 
@@ -39,6 +40,10 @@ gpu.Initialize({
 // Query GPU capabilities (architecture, SRAM, limits)
 PglCapabilityResponse cap = gpu.QueryCapability();
 // cap.gpuArch == PGL_ARCH_ARM_CM33, PGL_ARCH_RISCV_HAZARD3, etc.
+
+// Query detailed GPU health (temp, VRAM, clock, per-core usage)
+PglExtendedStatusResponse ext = gpu.QueryExtendedStatus();
+// ext.temperatureQ8, ext.currentClockMHz, ext.qspiAVramFreeKB, ...
 
 // Upload mesh once
 auto* enc = gpu.GetEncoder();
@@ -78,7 +83,8 @@ while (ptr < end) {
 
 ## Status
 
-- **v0.5.0** — GPU memory access API: 7 new SPI commands (0x30–0x3F) for direct memory read/write across all tiers (SRAM, OPI PSRAM, QSPI MRAM). 4 new I2C registers (0x0C–0x0F) for tier info, readback, and allocation status. Framebuffer capture for screenshots. Backward-compatible with v0.3 wire format.
+- **v0.6.0** *(planned)* — Programmable shader VM: upload custom shader bytecode (`CreateShaderProgram`), bind to camera slots (`BindShaderProgram`), set uniforms (`SetShaderUniform`). PSB bytecode interpreter on GPU.
+- **v0.5.0** — GPU memory access API: 7 new SPI commands (0x30–0x3F) for direct memory read/write across all tiers (SRAM, QSPI-A VRAM, QSPI-B VRAM). 4 new I2C registers (0x0C–0x0F) for tier info, readback, and allocation status. Framebuffer capture for screenshots. Extended status query (32-byte: temp, per-core usage, VRAM, timing). Clock frequency control via I2C. Backward-compatible with v0.3 wire format.
 - **v0.4.0** — M4 rasterizer fully implemented on GPU side: vertex transform, perspective/ortho projection, QuadTree spatial indexing, per-pixel barycentric rasterization with Z-buffer, SimpleMaterial evaluation. Dual-core parallel RasterizeRange.
 - **v0.3.1** — General shader system: 3 shader classes (CONVOLUTION, DISPLACEMENT, COLOR_ADJUST) replacing 8 hardcoded effects. Animated oscillator waveforms.
 - **v0.3.0** — Wire format frozen (backward-compatible with v0.2). Architecture-agnostic: GPU capability query, `PglParser.h` for alignment-safe deserialization, `PglGpuArch` enum.
@@ -87,3 +93,7 @@ while (ptr < end) {
 ## Specification
 
 See `docs/ProtoGL_API_Spec.md` for the complete wire-format specification.
+
+## Usage Guide
+
+See `docs/ProtoGL_Usage_And_Examples.md` for a comprehensive, code-first usage and examples reference.

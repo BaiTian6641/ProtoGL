@@ -55,11 +55,12 @@ and outputs to the HUB75 panel via BCM (Binary Code Modulation).
 | SDA    | 1             | GPx        | I2C data (400 kHz)   |
 | SCL    | 2             | GPx        | I2C clock            |
 
-### Flow Control
+### Flow Control & Notification
 
 | Signal | ESP32-S3 GPIO | RP2350 Pin | Description          |
 |--------|:-------------:|:----------:|----------------------|
-| RDY    | 9             | GPx        | GPU ready (active high, output from RP2350) |
+| DIR    | 10            | GPx        | Bus direction control (output from ESP32-S3) |
+| IRQ    | 13            | GPx        | GPU async notification (active-low, output from RP2350) |
 
 > **Note:** Replace `GPx` with the actual RP2350 GPIO numbers for your PCB layout.
 > The ESP32-S3 GPIOs above are examples — adjust the `#define` lines at the top

@@ -44,8 +44,12 @@ struct PglDeviceConfig {
     int8_t  i2cSclPin      = -1;
     uint8_t i2cAddress     = PGL_I2C_DEFAULT_ADDR;
 
-    // Flow control
-    int8_t  rdyPin         = -1;       // RP2350 ready signal (input, active high)
+    // Bus direction & notification
+    int8_t  dirPin         = -1;       // Bus direction control (output, high = host TX)
+    int8_t  irqPin         = -1;       // GPU async interrupt (input, active-low)
+
+    // Legacy aliases (deprecated — use dirPin / irqPin)
+    int8_t  rdyPin         = -1;       // DEPRECATED: mapped to dirPin if dirPin == -1
 
     // Command buffer sizing
     uint32_t commandBufferSize = 32768; // 32 KB default — enough for complex frames
@@ -53,8 +57,11 @@ struct PglDeviceConfig {
     // I2C bus instance (0 or 1)
     uint8_t i2cPort        = 0;        // Wire (0) or Wire1 (1)
 
-    // DMA timeout (milliseconds) — how long to wait for RDY before dropping frame
-    uint16_t rdyTimeoutMs  = 5;
+    // Bus turnaround delay (cycles at SPI clock rate)
+    uint16_t dirTurnaroundCycles = 2;  // Default: 2 cycles
+
+    // Legacy alias (deprecated — use dirTurnaroundCycles)
+    uint16_t rdyTimeoutMs  = 5;        // DEPRECATED: used only if dirTurnaroundCycles == 0
 };
 
 // ─── Device ─────────────────────────────────────────────────────────────────
@@ -102,15 +109,29 @@ public:
             }
         }
 
-        // ── Configure RDY pin (input, active high) ──────────────────────
-        if (config_.rdyPin >= 0) {
-            gpio_config_t rdyCfg = {};
-            rdyCfg.pin_bit_mask = (1ULL << config_.rdyPin);
-            rdyCfg.mode         = GPIO_MODE_INPUT;
-            rdyCfg.pull_up_en   = GPIO_PULLUP_DISABLE;
-            rdyCfg.pull_down_en = GPIO_PULLDOWN_ENABLE;  // default low until GPU asserts
-            rdyCfg.intr_type    = GPIO_INTR_DISABLE;
-            gpio_config(&rdyCfg);
+        // ── Configure DIR pin (output, high = host TX) ─────────────────────
+        int8_t effectiveDirPin = config_.dirPin >= 0 ? config_.dirPin : config_.rdyPin;
+        if (effectiveDirPin >= 0) {
+            gpio_config_t dirCfg = {};
+            dirCfg.pin_bit_mask = (1ULL << effectiveDirPin);
+            dirCfg.mode         = GPIO_MODE_OUTPUT;
+            dirCfg.pull_up_en   = GPIO_PULLUP_DISABLE;
+            dirCfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            dirCfg.intr_type    = GPIO_INTR_DISABLE;
+            gpio_config(&dirCfg);
+            gpio_set_level(static_cast<gpio_num_t>(effectiveDirPin), 1); // default: host TX
+            config_.dirPin = effectiveDirPin;  // normalize
+        }
+
+        // ── Configure IRQ pin (input, active-low from GPU) ─────────────
+        if (config_.irqPin >= 0) {
+            gpio_config_t irqCfg = {};
+            irqCfg.pin_bit_mask = (1ULL << config_.irqPin);
+            irqCfg.mode         = GPIO_MODE_INPUT;
+            irqCfg.pull_up_en   = GPIO_PULLUP_ENABLE;   // default high (deasserted)
+            irqCfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            irqCfg.intr_type    = GPIO_INTR_DISABLE;     // ISR configured separately if needed
+            gpio_config(&irqCfg);
         }
 #endif
 
@@ -300,7 +321,7 @@ public:
      */
     bool HasExternalVram() {
         auto cap = QueryCapability();
-        return (cap.capFlags & (PGL_CAP_OPI_VRAM | PGL_CAP_QSPI_VRAM)) != 0;
+        return (cap.flags & (PGL_CAP_OPI_VRAM | PGL_CAP_QSPI_VRAM)) != 0;
     }
 
     // ─── Status ─────────────────────────────────────────────────────────
@@ -310,14 +331,14 @@ public:
     uint32_t GetGpuStalls() const { return gpuStalls_; }
     uint32_t GetConsecutiveDrops() const { return consecutiveDrops_; }
 
-    /// Check if the GPU's RDY pin is currently asserted.
+    /// Check if the GPU's IRQ pin is not asserted (high = no backpressure).
     bool IsGpuReady() const {
 #ifdef ARDUINO_ARCH_ESP32
-        if (config_.rdyPin >= 0) {
-            return gpio_get_level(static_cast<gpio_num_t>(config_.rdyPin)) != 0;
+        if (config_.irqPin >= 0) {
+            return gpio_get_level(static_cast<gpio_num_t>(config_.irqPin)) != 0;
         }
 #endif
-        return true;  // If no RDY pin configured, assume always ready
+        return true;  // If no IRQ pin configured, assume always ready
     }
 
 private:
@@ -390,11 +411,14 @@ private:
 
     bool WaitForReady() {
 #ifdef ARDUINO_ARCH_ESP32
-        if (config_.rdyPin < 0) return true;
+        if (config_.irqPin < 0 && config_.rdyPin < 0) return true;
 
         const uint32_t startMs = millis();
+        const uint16_t timeoutMs = config_.dirTurnaroundCycles > 0
+            ? (config_.dirTurnaroundCycles + 1)  // ~1 ms minimum
+            : config_.rdyTimeoutMs;               // legacy fallback
         while (!IsGpuReady()) {
-            if ((millis() - startMs) >= config_.rdyTimeoutMs) {
+            if ((millis() - startMs) >= timeoutMs) {
                 consecutiveDrops_++;
                 if (consecutiveDrops_ >= kMaxConsecutiveDrops) {
                     // GPU may be stuck — attempt a status query
@@ -419,7 +443,14 @@ private:
 
             // esp_lcd_panel_io_tx_color queues the DMA and returns immediately.
             // When complete, OnDMADone() fires and gives the semaphore back.
-            esp_lcd_panel_io_tx_color(panelIo_, -1, data, length);
+            esp_err_t err = esp_lcd_panel_io_tx_color(panelIo_, -1, data, length);
+            if (err != ESP_OK) {
+                // Enqueue failed — give the semaphore back to avoid deadlock
+                // on subsequent SubmitDMAAsync calls.
+                dmaInFlight_[bufferIdx] = false;
+                xSemaphoreGive(dmaDoneSem_);
+                droppedFrames_++;
+            }
         }
 #else
         (void)data;

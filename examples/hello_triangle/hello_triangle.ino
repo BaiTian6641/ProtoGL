@@ -42,7 +42,8 @@
 #define PGL_SDA  1      // I2C data  (config / status bus)
 #define PGL_SCL  2      // I2C clock
 
-#define PGL_RDY  9      // GPU ready signal (active-high input)
+#define PGL_DIR  10     // Bus direction control (output, high = host TX)
+#define PGL_IRQ  13     // GPU async notification (input, active-low)
 
 // ─── Display Geometry ───────────────────────────────────────────────────────
 
@@ -101,7 +102,8 @@ void setup() {
     cfg.i2cSclPin   = PGL_SCL;
     cfg.i2cAddress  = PGL_I2C_DEFAULT_ADDR;  // 0x3C
 
-    cfg.rdyPin      = PGL_RDY;
+    cfg.dirPin      = PGL_DIR;
+    cfg.irqPin      = PGL_IRQ;
 
     cfg.commandBufferSize = 4096; // 4 KB is plenty for a single triangle
 

@@ -5,7 +5,8 @@ target architecture. Each subfolder is a **standalone project** that builds
 independently of the ESP32-S3 host PlatformIO project.
 
 All firmwares share the same ProtoGL wire protocol and can be discovered by
-the host at runtime via the I2C capability query (register `0x09`).
+the host at runtime via the I2C management bus capability query (register `0x09`)
+or the SPI read command (0xE2).
 
 ## Targets
 
