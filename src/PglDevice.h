@@ -6,7 +6,7 @@
  * This is the high-level host-side interface. It owns the command buffer,
  * manages the encoder lifecycle, and coordinates DMA transfers.
  *
- * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
+ * ProtoGL API Specification v0.7 — extends v0.5 with display + pool commands
  */
 
 #pragma once
@@ -322,6 +322,65 @@ public:
     bool HasExternalVram() {
         auto cap = QueryCapability();
         return (cap.flags & (PGL_CAP_OPI_VRAM | PGL_CAP_QSPI_VRAM)) != 0;
+    }
+
+    // ─── Display Management (M11) ───────────────────────────────────────
+
+    /**
+     * @brief Select a display slot and read its capabilities.
+     *
+     * Writes the display ID to PGL_REG_DISPLAY_MODE, then reads
+     * PGL_REG_DISPLAY_CAPS to get the driver's capability struct.
+     *
+     * @param displayId  Display slot (0–PGL_MAX_DISPLAYS-1).
+     * @return PglDisplayCaps for the selected slot (all zeros if empty).
+     */
+    PglDisplayCaps QueryDisplayCaps(PglDisplay displayId = 0) {
+        uint8_t reg[2] = { PGL_REG_DISPLAY_MODE, displayId };
+        WriteI2C(reg, sizeof(reg));
+
+        PglDisplayCaps caps{};
+        uint8_t capReg = PGL_REG_DISPLAY_CAPS;
+        WriteI2C(&capReg, 1);
+        ReadI2C(&caps, sizeof(caps));
+        return caps;
+    }
+
+    /**
+     * @brief Set the active display mode.
+     *
+     * Writes a display type to PGL_REG_DISPLAY_MODE. The GPU's
+     * DisplayManager will route frames to the corresponding driver.
+     *
+     * @param displayType  PglDisplayType to activate.
+     */
+    void SetDisplayMode(PglDisplayType displayType) {
+        uint8_t data[] = { PGL_REG_DISPLAY_MODE, static_cast<uint8_t>(displayType) };
+        WriteI2C(data, sizeof(data));
+    }
+
+    // ─── Memory Pool Status (M11) ───────────────────────────────────────
+
+    /**
+     * @brief Query the status of a GPU memory pool.
+     *
+     * Writes the pool handle to PGL_REG_MEM_POOL_STATUS, then reads
+     * back the PglMemPoolStatusResponse.
+     *
+     * @param poolHandle  Pool handle to query.
+     * @return PglMemPoolStatusResponse (status=0xFF if handle invalid).
+     */
+    PglMemPoolStatusResponse QueryMemPoolStatus(PglPool poolHandle) {
+        uint8_t buf[3];
+        buf[0] = PGL_REG_MEM_POOL_STATUS;
+        std::memcpy(buf + 1, &poolHandle, sizeof(poolHandle));
+        WriteI2C(buf, sizeof(buf));
+
+        PglMemPoolStatusResponse resp{};
+        uint8_t reg = PGL_REG_MEM_POOL_STATUS;
+        WriteI2C(&reg, 1);
+        ReadI2C(&resp, sizeof(resp));
+        return resp;
     }
 
     // ─── Status ─────────────────────────────────────────────────────────

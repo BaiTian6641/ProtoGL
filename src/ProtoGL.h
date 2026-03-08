@@ -5,7 +5,7 @@
  * Single include header for the ProtoGL host library.
  * Include this file from your ESP32-S3 application code.
  *
- * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
+ * ProtoGL API Specification v0.7 — extends v0.5 with display + pool commands
  */
 
 #pragma once

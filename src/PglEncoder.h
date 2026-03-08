@@ -13,7 +13,7 @@
  *   encoder.EndFrame();
  *   // encoder.GetBuffer() / encoder.GetLength() → DMA source
  *
- * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
+ * ProtoGL API Specification v0.7.2 — extends v0.7 with 2D layers, defrag, persistence
  */
 
 #pragma once
@@ -715,6 +715,404 @@ public:
         payload.dstAddress = dstAddress;
         payload.size       = size;
         WriteCommand(PGL_CMD_MEM_COPY, &payload, sizeof(payload));
+    }
+
+    // ─── Memory Pool Commands (M11) ─────────────────────────────────────
+
+    /**
+     * @brief Create a fixed-size block pool in GPU memory.
+     *
+     * Allocates a contiguous region from the specified tier's free-list and
+     * subdivides it into `blockCount` blocks of `blockSize` bytes each.
+     * The pool handle is available via PGL_REG_MEM_ALLOC_RESULT I2C.
+     *
+     * @param tier        Target tier (PGL_TIER_AUTO not allowed).
+     * @param blockSize   Size of each block (4–4096, should be power-of-2).
+     * @param blockCount  Number of blocks to pre-allocate.
+     * @param tag         User-defined tag for debug identification.
+     */
+    void MemPoolCreate(PglMemTier tier, uint16_t blockSize,
+                       uint16_t blockCount, uint16_t tag = 0) {
+        PglCmdMemPoolCreate payload{};
+        payload.tier       = static_cast<uint8_t>(tier);
+        payload.blockSize  = blockSize;
+        payload.blockCount = blockCount;
+        payload.tag        = tag;
+        WriteCommand(PGL_CMD_MEM_POOL_CREATE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Allocate one block from a memory pool.
+     *
+     * The block index is returned via PGL_REG_MEM_ALLOC_RESULT I2C register.
+     * O(1) — pops from the pool's singly-linked free list.
+     *
+     * @param poolHandle  Pool handle (from prior create).
+     */
+    void MemPoolAlloc(PglPool poolHandle) {
+        PglCmdMemPoolAlloc payload{};
+        payload.poolHandle = poolHandle;
+        WriteCommand(PGL_CMD_MEM_POOL_ALLOC, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Free one block back to a memory pool.
+     *
+     * O(1) — pushes the block index onto the pool's free list.
+     *
+     * @param poolHandle  Pool handle.
+     * @param blockIndex  Block to free (0-based index).
+     */
+    void MemPoolFree(PglPool poolHandle, uint16_t blockIndex) {
+        PglCmdMemPoolFree payload{};
+        payload.poolHandle = poolHandle;
+        payload.blockIndex = blockIndex;
+        WriteCommand(PGL_CMD_MEM_POOL_FREE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Destroy a memory pool and return its backing memory to the tier.
+     * @param poolHandle  Pool to destroy.
+     */
+    void MemPoolDestroy(PglPool poolHandle) {
+        PglCmdMemPoolDestroy payload{};
+        payload.poolHandle = poolHandle;
+        WriteCommand(PGL_CMD_MEM_POOL_DESTROY, &payload, sizeof(payload));
+    }
+
+    // ─── Display Configuration Commands (M11) ───────────────────────────
+
+    /**
+     * @brief Configure a display driver slot on the GPU.
+     *
+     * Sends CMD_DISPLAY_CONFIGURE to activate, deactivate, or reconfigure
+     * a display output. The GPU's DisplayManager validates PIO allocation
+     * and rejects conflicting driver combinations.
+     *
+     * @param displayId    Display slot (0–PGL_MAX_DISPLAYS-1).
+     * @param displayType  PglDisplayType to activate.
+     * @param width        Display width (0 = driver default).
+     * @param height       Display height (0 = driver default).
+     * @param pixelFormat  PglDisplayPixelFormat.
+     * @param flags        PglDisplayConfigFlags bitmask.
+     * @param brightness   Initial brightness 0–255.
+     */
+    void DisplayConfigure(PglDisplay displayId, PglDisplayType displayType,
+                          uint16_t width = 0, uint16_t height = 0,
+                          PglDisplayPixelFormat pixelFormat = PGL_PIXFMT_RGB565,
+                          uint8_t flags = PGL_DISP_FLAG_ENABLED,
+                          uint8_t brightness = 128) {
+        PglCmdDisplayConfigure payload{};
+        payload.displayId   = displayId;
+        payload.displayType = static_cast<uint8_t>(displayType);
+        payload.width       = width;
+        payload.height      = height;
+        payload.pixelFormat = static_cast<uint8_t>(pixelFormat);
+        payload.flags       = flags;
+        payload.brightness  = brightness;
+        payload.reserved    = 0;
+        WriteCommand(PGL_CMD_DISPLAY_CONFIGURE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Set a partial-update region for a display.
+     *
+     * Useful for OLED/LCD displays that support windowed updates.
+     * The region is used for the next SwapBuffers() call on that display.
+     *
+     * @param displayId  Display slot.
+     * @param x          Left edge of region.
+     * @param y          Top edge of region.
+     * @param w          Width of region.
+     * @param h          Height of region.
+     */
+    void DisplaySetRegion(PglDisplay displayId,
+                          uint16_t x, uint16_t y,
+                          uint16_t w, uint16_t h) {
+        PglCmdDisplaySetRegion payload{};
+        payload.displayId = displayId;
+        payload.x = x;
+        payload.y = y;
+        payload.w = w;
+        payload.h = h;
+        WriteCommand(PGL_CMD_DISPLAY_SET_REGION, &payload, sizeof(payload));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // M12: 2D Layer & Drawing Commands (0xA0 – 0xAC)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @brief Create a 2D compositing layer with its own framebuffer.
+     *
+     * Layer 0 is reserved for the 3D pipeline. Layers 1–7 are user-created.
+     * The GPU-side LayerSlot allocates a framebuffer of width×height×2 bytes.
+     *
+     * @param layerId     Layer slot (1–7).
+     * @param width       Layer framebuffer width.
+     * @param height      Layer framebuffer height.
+     * @param pixelFormat Pixel format (usually PGL_PIXFMT_RGB565).
+     * @param blendMode   PglLayerBlendMode.
+     * @param opacity     Initial opacity (0–255).
+     */
+    void LayerCreate(PglLayer layerId, uint16_t width, uint16_t height,
+                     uint8_t pixelFormat = 0 /*RGB565*/,
+                     PglLayerBlendMode blendMode = PGL_LAYER_BLEND_ALPHA,
+                     uint8_t opacity = 255) {
+        PglCmdLayerCreate payload{};
+        payload.layerId     = layerId;
+        payload.width       = width;
+        payload.height      = height;
+        payload.pixelFormat = pixelFormat;
+        payload.blendMode   = static_cast<uint8_t>(blendMode);
+        payload.opacity     = opacity;
+        WriteCommand(PGL_CMD_LAYER_CREATE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Destroy a 2D layer and free its framebuffer.
+     * @param layerId  Layer slot to destroy (1–7).
+     */
+    void LayerDestroy(PglLayer layerId) {
+        PglCmdLayerDestroy payload{};
+        payload.layerId = layerId;
+        WriteCommand(PGL_CMD_LAYER_DESTROY, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Update layer compositing properties (opacity, blend mode, offset).
+     */
+    void LayerSetProps(PglLayer layerId, uint8_t opacity,
+                       PglLayerBlendMode blendMode = PGL_LAYER_BLEND_ALPHA,
+                       int16_t offsetX = 0, int16_t offsetY = 0) {
+        PglCmdLayerSetProps payload{};
+        payload.layerId   = layerId;
+        payload.opacity   = opacity;
+        payload.blendMode = static_cast<uint8_t>(blendMode);
+        payload.offsetX   = offsetX;
+        payload.offsetY   = offsetY;
+        WriteCommand(PGL_CMD_LAYER_SET_PROPS, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Draw a filled or outlined rectangle on a 2D layer.
+     */
+    void DrawRect2D(PglLayer layerId, int16_t x, int16_t y,
+                    uint16_t w, uint16_t h,
+                    uint16_t color, bool filled = true) {
+        PglCmdDrawRect2D payload{};
+        payload.layerId = layerId;
+        payload.x       = x;
+        payload.y       = y;
+        payload.w       = w;
+        payload.h       = h;
+        payload.color   = color;
+        payload.filled  = filled ? 1 : 0;
+        WriteCommand(PGL_CMD_DRAW_RECT_2D, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Draw a line on a 2D layer.
+     */
+    void DrawLine2D(PglLayer layerId, int16_t x0, int16_t y0,
+                    int16_t x1, int16_t y1, uint16_t color) {
+        PglCmdDrawLine2D payload{};
+        payload.layerId = layerId;
+        payload.x0      = x0;
+        payload.y0      = y0;
+        payload.x1      = x1;
+        payload.y1      = y1;
+        payload.color   = color;
+        WriteCommand(PGL_CMD_DRAW_LINE_2D, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Draw a filled or outlined circle on a 2D layer.
+     */
+    void DrawCircle2D(PglLayer layerId, int16_t cx, int16_t cy,
+                      uint16_t radius, uint16_t color, bool filled = true) {
+        PglCmdDrawCircle2D payload{};
+        payload.layerId = layerId;
+        payload.cx      = cx;
+        payload.cy      = cy;
+        payload.radius  = radius;
+        payload.color   = color;
+        payload.filled  = filled ? 1 : 0;
+        WriteCommand(PGL_CMD_DRAW_CIRCLE_2D, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Blit a texture to a 2D layer position.
+     *
+     * @param textureId  Source texture handle (must be pre-loaded via CreateTexture).
+     * @param flags      PglSpriteFlags bitmask (flip H/V, source is sequence).
+     */
+    void DrawSprite(PglLayer layerId, int16_t x, int16_t y,
+                    PglTexture textureId, uint8_t flags = 0) {
+        PglCmdDrawSprite payload{};
+        payload.layerId   = layerId;
+        payload.x         = x;
+        payload.y         = y;
+        payload.textureId = textureId;
+        payload.flags     = flags;
+        WriteCommand(PGL_CMD_DRAW_SPRITE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Clear a 2D layer to a solid color.
+     */
+    void LayerClear(PglLayer layerId, uint16_t color = 0x0000) {
+        PglCmdLayerClear payload{};
+        payload.layerId = layerId;
+        payload.color   = color;
+        WriteCommand(PGL_CMD_LAYER_CLEAR, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Draw a rounded rectangle on a 2D layer.
+     */
+    void DrawRoundedRect(PglLayer layerId, int16_t x, int16_t y,
+                         uint16_t w, uint16_t h, uint16_t radius,
+                         uint16_t color, bool filled = true) {
+        PglCmdDrawRoundedRect payload{};
+        payload.layerId = layerId;
+        payload.x       = x;
+        payload.y       = y;
+        payload.w       = w;
+        payload.h       = h;
+        payload.radius  = radius;
+        payload.color   = color;
+        payload.filled  = filled ? 1 : 0;
+        WriteCommand(PGL_CMD_DRAW_ROUNDED_RECT, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Draw an arc on a 2D layer.
+     */
+    void DrawArc(PglLayer layerId, int16_t cx, int16_t cy,
+                 uint16_t radius, int16_t startAngleDeg, int16_t endAngleDeg,
+                 uint16_t color) {
+        PglCmdDrawArc payload{};
+        payload.layerId       = layerId;
+        payload.cx            = cx;
+        payload.cy            = cy;
+        payload.radius        = radius;
+        payload.startAngleDeg = startAngleDeg;
+        payload.endAngleDeg   = endAngleDeg;
+        payload.color         = color;
+        WriteCommand(PGL_CMD_DRAW_ARC, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Draw a filled 2D triangle on a layer.
+     */
+    void DrawTriangle2D(PglLayer layerId,
+                        int16_t x0, int16_t y0,
+                        int16_t x1, int16_t y1,
+                        int16_t x2, int16_t y2,
+                        uint16_t color) {
+        PglCmdDrawTriangle2D payload{};
+        payload.layerId = layerId;
+        payload.x0 = x0; payload.y0 = y0;
+        payload.x1 = x1; payload.y1 = y1;
+        payload.x2 = x2; payload.y2 = y2;
+        payload.color = color;
+        WriteCommand(PGL_CMD_DRAW_TRIANGLE_2D, &payload, sizeof(payload));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // M12: Memory Defrag (0x3C)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @brief Trigger memory defragmentation on a tier.
+     *
+     * @param tier       PglMemTier to defragment (PGL_TIER_AUTO = all tiers).
+     * @param mode       PGL_DEFRAG_INCREMENTAL or PGL_DEFRAG_URGENT.
+     * @param maxMoveKB  Max kilobytes to relocate (incremental mode).
+     */
+    void MemDefrag(uint8_t tier = 0xFF /*AUTO*/, PglDefragMode mode = PGL_DEFRAG_INCREMENTAL,
+                   uint16_t maxMoveKB = 32) {
+        PglCmdMemDefrag payload{};
+        payload.tier      = tier;
+        payload.mode      = static_cast<uint8_t>(mode);
+        payload.maxMoveKB = maxMoveKB;
+        WriteCommand(PGL_CMD_MEM_DEFRAG, &payload, sizeof(payload));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // M12: Direct Framebuffer Write (0x45)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @brief Write a rectangle of RGB565 pixels directly to a layer or back buffer.
+     *
+     * @param layerId  Target layer (0xFF = primary 3D back buffer).
+     * @param x        Destination X.
+     * @param y        Destination Y.
+     * @param w        Width in pixels.
+     * @param h        Height in pixels.
+     * @param pixels   Pointer to w×h RGB565 pixel data.
+     */
+    void WriteFramebuffer(PglLayer layerId, int16_t x, int16_t y,
+                          uint16_t w, uint16_t h,
+                          const uint16_t* pixels) {
+        PglCmdWriteFramebufferHeader hdr{};
+        hdr.layerId = layerId;
+        hdr.x       = x;
+        hdr.y       = y;
+        hdr.w       = w;
+        hdr.h       = h;
+        uint32_t pixelBytes = uint32_t(w) * h * sizeof(uint16_t);
+        uint16_t totalPayload = sizeof(hdr) + pixelBytes;
+        WriteCommandHeader(PGL_CMD_WRITE_FRAMEBUFFER, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        WriteRaw(pixels, pixelBytes);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // M12: Resource Persistence (0x46 – 0x48)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @brief Queue a resource for flash persistence (writeback).
+     *
+     * @param resourceClass  PglMemResourceClass.
+     * @param resourceId     Resource handle.
+     * @param overwrite      Overwrite existing flash entry if present.
+     */
+    void PersistResource(uint8_t resourceClass, uint16_t resourceId,
+                         bool overwrite = true) {
+        PglCmdPersistResource payload{};
+        payload.resourceClass = resourceClass;
+        payload.resourceId    = resourceId;
+        payload.flags         = overwrite ? PGL_PERSIST_OVERWRITE : 0;
+        WriteCommand(PGL_CMD_PERSIST_RESOURCE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Restore a resource from flash manifest to VRAM.
+     */
+    void RestoreResource(uint8_t resourceClass, uint16_t resourceId) {
+        PglCmdRestoreResource payload{};
+        payload.resourceClass = resourceClass;
+        payload.resourceId    = resourceId;
+        WriteCommand(PGL_CMD_RESTORE_RESOURCE, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief Query persistence status for a resource (or entire manifest).
+     *
+     * Result available via PGL_REG_MEM_PERSIST_STATUS I2C register.
+     *
+     * @param resourceClass  0xFF to query manifest-level status.
+     * @param resourceId     Ignored if class = 0xFF.
+     */
+    void QueryPersistence(uint8_t resourceClass = 0xFF, uint16_t resourceId = 0) {
+        PglCmdQueryPersistence payload{};
+        payload.resourceClass = resourceClass;
+        payload.resourceId    = resourceId;
+        WriteCommand(PGL_CMD_QUERY_PERSISTENCE, &payload, sizeof(payload));
     }
 
 private:

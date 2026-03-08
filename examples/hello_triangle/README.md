@@ -127,6 +127,7 @@ ProtoGL — Hello Triangle
 PglDevice initialized — Octal SPI + I2C ready
 GPU arch: 0x01  cores: 2  freq: 150 MHz  SRAM: 520 KB
 Max vertices: 2048  triangles: 1024  meshes: 256  materials: 256
+Display 0: type=0x01  64x64  refresh=333 Hz
 Resources uploaded — entering render loop
 Frame 60  GPU FPS: 120  dropped: 0  overflow: 0
 Frame 120  GPU FPS: 120  dropped: 0  overflow: 0
@@ -142,19 +143,23 @@ A solid magenta triangle centered on a black background on the 64 × 64 HUB75 pa
 |------|----------|---------|
 | 1 | `PglDevice::Initialize(cfg)` | Set up Octal SPI DMA + I2C bus |
 | 2 | `QueryCapability()` | Discover GPU architecture and limits |
-| 3 | `SetBrightness(64)` | Configure HUB75 panel brightness via I2C |
-| 4 | `SetPixelLayoutRect(...)` | Tell GPU: "64×64 rectangular pixel grid" |
-| 5 | `CreateMesh(0, verts, 3, idx, 1)` | Upload 3 vertices + 1 triangle |
-| 6 | `CreateMaterial(0, SIMPLE, ...)` | Solid magenta (255, 0, 255) |
-| 7 | `BeginFrame()` / `EndFrame()` | Frame lifecycle (ping-pong DMA) |
-| 8 | `SetCamera(0, 0, ..., is2D=true)` | 2D orthographic camera |
-| 9 | `DrawObject(0, 0, ...)` | Draw mesh 0 with material 0 |
+| 3 | `QueryDisplayCaps(0)` | Query HUB75 display capabilities (M11) |
+| 4 | `DisplayConfigure(0, HUB75, ...)` | Configure HUB75 as display slot 0 (M11) |
+| 5 | `SetBrightness(64)` | Configure HUB75 panel brightness via I2C |
+| 6 | `SetPixelLayoutRect(...)` | Tell GPU: "64×64 rectangular pixel grid" |
+| 7 | `CreateMesh(0, verts, 3, idx, 1)` | Upload 3 vertices + 1 triangle |
+| 8 | `CreateMaterial(0, SIMPLE, ...)` | Solid magenta (255, 0, 255) |
+| 9 | `BeginFrame()` / `EndFrame()` | Frame lifecycle (ping-pong DMA) |
+| 10 | `SetCamera(0, 0, ..., is2D=true)` | 2D orthographic camera |
+| 11 | `DrawObject(0, 0, ...)` | Draw mesh 0 with material 0 |
 
 ## Next Steps
 
 - Change the material color by modifying the `PglParamSimple` RGB values
 - Add rotation: pass a non-identity `PglQuat` to `DrawObject()`
 - Add a second triangle with a different material
+- Enable the **I2C HUD OLED** — uncomment `DisplayConfigure(1, I2C_HUD, ...)` in setup()
+- Try the **[display_and_pools](../display_and_pools/README.md)** example for M11 memory pools
 - Switch to a `PGL_MAT_GRADIENT` material for vertex-colored output
 - Add a `PGL_MAT_LIGHT` material with a directional light
 - Upload a texture with `CreateTexture()` and use a `PGL_MAT_IMAGE` material

@@ -5,7 +5,7 @@
  * These structs are designed for direct serialization (little-endian, packed).
  * They are shared between the ESP32-S3 host encoder and the RP2350 GPU decoder.
  *
- * ProtoGL API Specification v0.5 — extends v0.3 frozen wire format
+ * ProtoGL API Specification v0.7.3 — M12 implementation audit alignment
  */
 
 #pragma once
@@ -20,37 +20,50 @@ using PglMaterial = uint16_t;
 using PglTexture  = uint16_t;
 using PglCamera   = uint8_t;
 using PglLayout   = uint8_t;
+using PglDisplay  = uint8_t;   ///< Display driver slot handle (0–3, M11)
+using PglPool     = uint16_t;  ///< Memory pool handle (M11)
+using PglLayer    = uint8_t;   ///< 2D compositing layer handle (0–7, M12)
 
 static constexpr PglMesh     PGL_INVALID_MESH     = 0xFFFF;
 static constexpr PglMaterial PGL_INVALID_MATERIAL  = 0xFFFF;
 static constexpr PglTexture  PGL_INVALID_TEXTURE   = 0xFFFF;
 static constexpr PglCamera   PGL_INVALID_CAMERA    = 0xFF;
 static constexpr PglLayout   PGL_INVALID_LAYOUT    = 0xFF;
+static constexpr PglDisplay  PGL_INVALID_DISPLAY   = 0xFF;
+static constexpr PglPool     PGL_INVALID_POOL      = 0xFFFF;
+static constexpr PglLayer    PGL_INVALID_LAYER     = 0xFF;
 
 // ─── GPU Memory Types ───────────────────────────────────────────────────────
 
 /// Memory tier identifier — selects which physical memory to target.
 enum PglMemTier : uint8_t {
     PGL_TIER_SRAM       = 0,   // Tier 0: On-chip SRAM (520 KB, 1-cycle)
-    PGL_TIER_OPI_PSRAM  = 1,   // Tier 1: PIO2 external memory (OPI PSRAM or QSPI MRAM)
-    PGL_TIER_QSPI_PSRAM = 2,   // Tier 2: QSPI memory via QMI CS1 (MRAM or PSRAM, XIP)
+    PGL_TIER_QSPI_A     = 1,   // Tier 1: QSPI Channel A VRAM (PIO2 SM0+SM1, RP2350B)
+    PGL_TIER_QSPI_B     = 2,   // Tier 2: QSPI Channel B VRAM (PIO2 SM2+SM3, RP2350B)
     PGL_TIER_AUTO       = 0xFF, // Let GPU decide (tiering manager)
+
+    // Legacy aliases (wire-compatible — enum values unchanged)
+    PGL_TIER_OPI_PSRAM  = PGL_TIER_QSPI_A,
+    PGL_TIER_QSPI_PSRAM = PGL_TIER_QSPI_B,
 };
 
-/// PIO2 external memory operating mode (reported in extended status).
-/// Selects the bus width and chip configuration for Tier 1.
-enum PglPio2MemMode : uint8_t {
-    PGL_PIO2_MODE_NONE              = 0,   // PIO2 not used for external memory
-    PGL_PIO2_MODE_OPI_PSRAM         = 1,   // 8-bit OPI: APS6408L (8 MB)
-    PGL_PIO2_MODE_DUAL_QSPI_MRAM   = 2,   // 4-bit QSPI × 2: MR10Q010 (256 KB)
-    PGL_PIO2_MODE_SINGLE_QSPI_MRAM = 3,   // 4-bit QSPI × 1: MR10Q010 (128 KB)
+/// QSPI VRAM channel configuration (reported in extended status).
+/// Replaces the old PglPio2MemMode (which assumed OPI/single-QSPI).
+enum PglQspiVramMode : uint8_t {
+    PGL_QSPI_VRAM_NONE           = 0,   // No external VRAM (RP2350A, or RP2350B unpopulated)
+    PGL_QSPI_VRAM_SINGLE_CHANNEL = 1,   // QSPI Channel A only (1–2 chips)
+    PGL_QSPI_VRAM_DUAL_CHANNEL   = 2,   // Both Channel A + B (up to 2+2 chips)
 };
 
-/// Chip type detected on GPU's QSPI CS1 slot (reported in extended status).
+/// Legacy alias
+using PglPio2MemMode = PglQspiVramMode;
+static constexpr PglQspiVramMode PGL_PIO2_MODE_NONE = PGL_QSPI_VRAM_NONE;
+
+/// Chip type detected on a QSPI VRAM chip-select (reported in extended status).
 /// Determines memory tier placement policy: MRAM has no random-access penalty,
 /// enabling more aggressive demotion of LUTs/materials/textures from SRAM.
 enum PglQspiChipType : uint8_t {
-    PGL_QSPI_CHIP_NONE           = 0,     // CS1 unpopulated
+    PGL_QSPI_CHIP_NONE           = 0,     // Chip-select unpopulated
     PGL_QSPI_CHIP_MRAM_MR10Q010  = 1,     // 128 KB MRAM, no random-access penalty
     PGL_QSPI_CHIP_PSRAM_APS6408L = 2,     // 8 MB PSRAM, row-buffer miss penalty
     PGL_QSPI_CHIP_PSRAM_ESP      = 3,     // 8 MB PSRAM, row-buffer miss penalty
@@ -84,6 +97,44 @@ static constexpr uint8_t  PGL_MAX_DRAW_CALLS  = 64;
 
 static constexpr uint16_t PGL_MAX_VERTICES    = 2048;
 static constexpr uint16_t PGL_MAX_TRIANGLES   = 1024;
+
+// ─── Display Limits (M11) ───────────────────────────────────────────────────
+
+static constexpr uint8_t  PGL_MAX_DISPLAYS    = 4;    ///< Max simultaneously active display drivers
+static constexpr uint8_t  PGL_MAX_MEM_POOLS   = 16;   ///< Max concurrent memory pools
+
+// ─── 2D Layer Limits (M12) ──────────────────────────────────────────────────
+
+static constexpr uint8_t  PGL_MAX_LAYERS      = 8;    ///< Max compositing layers (0 = 3D, 1–7 = 2D)
+static constexpr uint8_t  PGL_LAYER_3D        = 0;    ///< Layer 0 is always the 3D scene layer
+static constexpr uint8_t  PGL_MAX_2D_DRAW_CMDS = 128; ///< Max queued 2D draw commands per frame
+
+/// Display driver type identifiers.
+/// The GPU firmware registers one driver per type; DisplayManager routes by ID.
+enum PglDisplayType : uint8_t {
+    PGL_DISPLAY_NONE         = 0x00,  ///< No display / slot empty
+    PGL_DISPLAY_HUB75        = 0x01,  ///< HUB75 LED matrix (PIO0 + BCM, main display)
+    PGL_DISPLAY_I2C_HUD      = 0x02,  ///< I2C1 SSD1306/SSD1309 128×64 mono OLED (HUD)
+    PGL_DISPLAY_SPI_LCD      = 0x03,  ///< SPI LCD (future — reserved for M12)
+    PGL_DISPLAY_DVI          = 0x04,  ///< DVI-D (PIO TMDS, future — reserved for M12)
+    PGL_DISPLAY_QSPI_LCD     = 0x05,  ///< QSPI LCD (future — reserved for M12)
+};
+
+/// Display configuration flags (bitmask).
+enum PglDisplayConfigFlags : uint8_t {
+    PGL_DISP_FLAG_ENABLED    = 0x01,  ///< Enable output on this display
+    PGL_DISP_FLAG_MIRROR     = 0x02,  ///< Mirror the primary display's framebuffer
+    PGL_DISP_FLAG_FLIP_H     = 0x04,  ///< Horizontal flip
+    PGL_DISP_FLAG_FLIP_V     = 0x08,  ///< Vertical flip
+    PGL_DISP_FLAG_HUD_AUTO   = 0x10,  ///< Auto-render GPU status overlay (I2C HUD only)
+};
+
+/// Display pixel format.
+enum PglDisplayPixelFormat : uint8_t {
+    PGL_PIXFMT_RGB565        = 0x00,  ///< 16-bit RGB (HUB75, SPI LCD, DVI)
+    PGL_PIXFMT_MONO1         = 0x01,  ///< 1-bit monochrome (I2C HUD OLED)
+    PGL_PIXFMT_RGB888        = 0x02,  ///< 24-bit RGB (DVI-D native)
+};
 
 // ─── Wire Primitives (packed, little-endian) ────────────────────────────────
 
@@ -521,6 +572,103 @@ struct PglCmdMemCopy {
 };
 static_assert(sizeof(PglCmdMemCopy) == 14, "PglCmdMemCopy must be 14 bytes");
 
+// ─── Memory Pool Command Payloads (M11) ─────────────────────────────────────
+
+/// CMD_MEM_POOL_CREATE (0x38) — create a fixed-size block pool.
+/// Allocates a contiguous region from the tier's free-list, then subdivides
+/// into `blockCount` blocks of `blockSize` bytes each.
+struct PglCmdMemPoolCreate {
+    uint8_t  tier;          ///< PglMemTier (PGL_TIER_AUTO not allowed)
+    uint16_t blockSize;     ///< Size of each block in bytes (4–4096, must be power-of-2)
+    uint16_t blockCount;    ///< Number of blocks to pre-allocate
+    uint16_t tag;           ///< User-defined tag for debug/identification
+};
+static_assert(sizeof(PglCmdMemPoolCreate) == 7, "PglCmdMemPoolCreate must be 7 bytes");
+
+/// CMD_MEM_POOL_ALLOC (0x39) — allocate one block from a pool.
+/// The resulting block index is available via PGL_REG_MEM_ALLOC_RESULT I2C.
+struct PglCmdMemPoolAlloc {
+    PglPool poolHandle;     ///< Pool handle (from prior create — read via I2C)
+};
+static_assert(sizeof(PglCmdMemPoolAlloc) == 2, "PglCmdMemPoolAlloc must be 2 bytes");
+
+/// CMD_MEM_POOL_FREE (0x3A) — free one block back to a pool.
+struct PglCmdMemPoolFree {
+    PglPool  poolHandle;    ///< Pool handle
+    uint16_t blockIndex;    ///< Block index within the pool (0-based)
+};
+static_assert(sizeof(PglCmdMemPoolFree) == 4, "PglCmdMemPoolFree must be 4 bytes");
+
+/// CMD_MEM_POOL_DESTROY (0x3B) — destroy pool and return memory to tier.
+struct PglCmdMemPoolDestroy {
+    PglPool poolHandle;     ///< Pool handle to destroy
+};
+static_assert(sizeof(PglCmdMemPoolDestroy) == 2, "PglCmdMemPoolDestroy must be 2 bytes");
+
+// ─── Display Command Payloads (M11) ─────────────────────────────────────────
+
+/// CMD_DISPLAY_CONFIGURE (0x90) — configure a display driver slot.
+/// Sent once at startup or when switching display modes.
+struct PglCmdDisplayConfigure {
+    PglDisplay displayId;   ///< Display slot (0–PGL_MAX_DISPLAYS-1)
+    uint8_t    displayType; ///< PglDisplayType to activate in this slot
+    uint16_t   width;       ///< Display width in pixels (0 = use driver default)
+    uint16_t   height;      ///< Display height in pixels (0 = use driver default)
+    uint8_t    pixelFormat; ///< PglDisplayPixelFormat
+    uint8_t    flags;       ///< PglDisplayConfigFlags bitmask
+    uint8_t    brightness;  ///< Initial brightness (0–255)
+    uint8_t    reserved;    ///< Padding / future use
+};
+static_assert(sizeof(PglCmdDisplayConfigure) == 10, "PglCmdDisplayConfigure must be 10 bytes");
+
+/// CMD_DISPLAY_SET_REGION (0x91) — set partial-update region for a display.
+/// Useful for OLED/LCD displays that support windowed updates.
+struct PglCmdDisplaySetRegion {
+    PglDisplay displayId;   ///< Display slot
+    uint16_t   x;           ///< Left edge of region
+    uint16_t   y;           ///< Top edge of region
+    uint16_t   w;           ///< Width of region
+    uint16_t   h;           ///< Height of region
+};
+static_assert(sizeof(PglCmdDisplaySetRegion) == 9, "PglCmdDisplaySetRegion must be 9 bytes");
+
+/// Display capabilities response — returned by PGL_REG_DISPLAY_CAPS I2C.
+/// Reports what a display driver can do (queried per-slot).
+struct PglDisplayCaps {
+    uint8_t  displayType;   ///< PglDisplayType
+    uint16_t width;         ///< Native resolution width
+    uint16_t height;        ///< Native resolution height
+    uint8_t  pixelFormat;   ///< Native PglDisplayPixelFormat
+    uint8_t  maxBrightness; ///< Max brightness (255 = full range)
+    uint8_t  flags;         ///< Supported PglDisplayConfigFlags
+    uint16_t refreshHz;     ///< Native refresh rate in Hz
+    uint16_t framebufKB;    ///< Framebuffer size in KB
+    uint8_t  pioUsage;      ///< Number of PIO SMs consumed (0 for I2C drivers)
+    uint8_t  dmaUsage;      ///< Number of DMA channels consumed
+    uint8_t  reserved[2];   ///< Padding to 16 bytes
+};
+static_assert(sizeof(PglDisplayCaps) == 16, "PglDisplayCaps must be 16 bytes");
+
+/// Memory pool status response — returned by PGL_REG_MEM_POOL_STATUS I2C.
+/// Reports current state of a specific memory pool.
+struct PglMemPoolStatusResponse {
+    PglPool  poolHandle;    ///< Pool handle queried
+    uint8_t  tier;          ///< PglMemTier where pool resides
+    uint16_t blockSize;     ///< Block size in bytes
+    uint16_t blockCount;    ///< Total blocks in pool
+    uint16_t freeCount;     ///< Currently free blocks
+    uint16_t tag;           ///< User-defined tag
+    uint8_t  status;        ///< 0 = OK, 1 = exhausted, 0xFF = invalid handle
+};
+static_assert(sizeof(PglMemPoolStatusResponse) == 12, "PglMemPoolStatusResponse must be 12 bytes");
+
+/// Memory pool status codes.
+enum PglPoolStatus : uint8_t {
+    PGL_POOL_OK              = 0x00,  ///< Pool operational, free blocks available
+    PGL_POOL_EXHAUSTED       = 0x01,  ///< All blocks allocated (alloc will fail)
+    PGL_POOL_INVALID_HANDLE  = 0xFF,  ///< Pool handle not found
+};
+
 #pragma pack(pop)
 
 // ─── Material Types ─────────────────────────────────────────────────────────
@@ -694,6 +842,21 @@ enum PglI2CRegister : uint8_t {
     // ── Extended Diagnostics & Control (0x10 – 0x13) ──
     PGL_REG_SET_CLOCK_FREQ   = 0x10,  // Write: PglClockRequest (target MHz + voltage)
     PGL_REG_EXTENDED_STATUS  = 0x11,  // Read: PglExtendedStatusResponse (32 bytes)
+
+    // ── Display & Memory Pool Registers (M11: 0x15 – 0x18) ──
+    PGL_REG_DISPLAY_MODE     = 0x15,  // Write: uint8_t displayId → select active display for queries
+                                      // Read:  uint8_t current active display type (PglDisplayType)
+    PGL_REG_DISPLAY_CAPS     = 0x16,  // Read: PglDisplayCaps (16 bytes) for selected display slot
+    PGL_REG_MEM_POOL_STATUS  = 0x18,  // Write: uint16_t poolHandle → select pool
+                                      // Read:  PglMemPoolStatusResponse (12 bytes)
+
+    // ── Memory Defrag & Persistence Registers (M12: 0x19, 0x1C) ──
+    PGL_REG_MEM_DEFRAG_STATUS  = 0x19,  // Read: PglMemDefragStatusResponse (8 bytes)
+    PGL_REG_MEM_PERSIST_STATUS = 0x1C,  // Read: PglMemPersistStatusResponse (12 bytes)
+
+    // ── Display Frontend Registers (M12: 0x1D – 0x1E) ──
+    PGL_REG_DIRTY_STATS          = 0x1D,  // Read: PglDirtyStatsResponse (8 bytes)
+    PGL_REG_DMA_FILL_THRESHOLD   = 0x1E,  // Write: uint16_t threshold in pixels (default 128)
 };
 
 #pragma pack(push, 1)
@@ -771,7 +934,7 @@ enum PglClockFlags : uint8_t {
 /// Returned by PGL_REG_CAPABILITY_QUERY (0x09). Allows the host to discover
 /// what GPU core is on the other end of the wire.
 struct PglCapabilityResponse {
-    uint8_t  protoVersion;   // ProtoGL protocol version (currently 5 = v0.5)
+    uint8_t  protoVersion;   // ProtoGL protocol version (currently 7 = v0.7)
     uint8_t  gpuArch;        // PglGpuArch enum value
     uint8_t  coreCount;      // Number of render cores (e.g., 2 for RP2350)
     uint8_t  coreFreqMHz;    // Core clock in MHz (e.g., 150)
@@ -849,5 +1012,241 @@ enum PglMemAllocStatus : uint8_t {
     PGL_ALLOC_TIER_DISABLED    = 0x03,
     PGL_ALLOC_HANDLE_EXHAUSTED = 0x04,
 };
+
+// ─── 2D Layer Blend Modes (M12) ────────────────────────────────────────────
+
+/// Blend modes for layer compositing (distinct from material blend modes).
+enum PglLayerBlendMode : uint8_t {
+    PGL_LAYER_BLEND_ALPHA    = 0,   ///< Standard alpha-over compositing
+    PGL_LAYER_BLEND_ADDITIVE = 1,   ///< Additive blending (glow effects)
+    PGL_LAYER_BLEND_MULTIPLY = 2,   ///< Multiply blending (darkening)
+};
+
+// ─── 2D Layer Command Payloads (0xA0 – 0xAC, M12) ──────────────────────────
+
+/// CMD_LAYER_CREATE (0xA0) — create a 2D compositing layer with framebuffer.
+struct PglCmdLayerCreate {
+    PglLayer layerId;       ///< Layer slot (1–7; 0 is reserved for 3D)
+    uint16_t width;         ///< Layer framebuffer width in pixels
+    uint16_t height;        ///< Layer framebuffer height in pixels
+    uint8_t  pixelFormat;   ///< PglDisplayPixelFormat (usually RGB565)
+    uint8_t  blendMode;     ///< PglLayerBlendMode
+    uint8_t  opacity;       ///< Initial opacity (0–255)
+};
+static_assert(sizeof(PglCmdLayerCreate) == 8, "PglCmdLayerCreate must be 8 bytes");
+
+/// CMD_LAYER_DESTROY (0xA1) — destroy layer and free its framebuffer.
+struct PglCmdLayerDestroy {
+    PglLayer layerId;       ///< Layer slot to destroy
+};
+static_assert(sizeof(PglCmdLayerDestroy) == 1, "PglCmdLayerDestroy must be 1 byte");
+
+/// CMD_LAYER_SET_PROPS (0xA2) — update layer compositing properties.
+struct PglCmdLayerSetProps {
+    PglLayer layerId;       ///< Target layer
+    uint8_t  opacity;       ///< 0–255
+    uint8_t  blendMode;     ///< PglLayerBlendMode
+    int16_t  offsetX;       ///< Compositing offset X (signed)
+    int16_t  offsetY;       ///< Compositing offset Y (signed)
+};
+static_assert(sizeof(PglCmdLayerSetProps) == 7, "PglCmdLayerSetProps must be 7 bytes");
+
+/// CMD_DRAW_RECT_2D (0xA3) — draw a filled or outlined rectangle.
+struct PglCmdDrawRect2D {
+    PglLayer layerId;       ///< Target layer
+    int16_t  x;             ///< Top-left X
+    int16_t  y;             ///< Top-left Y
+    uint16_t w;             ///< Width
+    uint16_t h;             ///< Height
+    uint16_t color;         ///< RGB565 color
+    uint8_t  filled;        ///< 1 = filled, 0 = outline only
+};
+static_assert(sizeof(PglCmdDrawRect2D) == 12, "PglCmdDrawRect2D must be 12 bytes");
+
+/// CMD_DRAW_LINE_2D (0xA4) — draw a line using Bresenham's algorithm.
+struct PglCmdDrawLine2D {
+    PglLayer layerId;       ///< Target layer
+    int16_t  x0;            ///< Start X
+    int16_t  y0;            ///< Start Y
+    int16_t  x1;            ///< End X
+    int16_t  y1;            ///< End Y
+    uint16_t color;         ///< RGB565 color
+};
+static_assert(sizeof(PglCmdDrawLine2D) == 11, "PglCmdDrawLine2D must be 11 bytes");
+
+/// CMD_DRAW_CIRCLE_2D (0xA5) — draw a filled or outlined circle.
+struct PglCmdDrawCircle2D {
+    PglLayer layerId;       ///< Target layer
+    int16_t  cx;            ///< Center X
+    int16_t  cy;            ///< Center Y
+    uint16_t radius;        ///< Radius in pixels
+    uint16_t color;         ///< RGB565 color
+    uint8_t  filled;        ///< 1 = filled, 0 = outline only
+};
+static_assert(sizeof(PglCmdDrawCircle2D) == 10, "PglCmdDrawCircle2D must be 10 bytes");
+
+/// CMD_DRAW_SPRITE (0xA6) — blit a texture to a layer position.
+struct PglCmdDrawSprite {
+    PglLayer   layerId;     ///< Target layer
+    int16_t    x;           ///< Destination X
+    int16_t    y;           ///< Destination Y
+    PglTexture textureId;   ///< Source texture handle
+    uint8_t    flags;       ///< bit0: flipH, bit1: flipV, bit2: srcIsSequence
+};
+static_assert(sizeof(PglCmdDrawSprite) == 8, "PglCmdDrawSprite must be 8 bytes");
+
+/// Sprite flags bitmask.
+enum PglSpriteFlags : uint8_t {
+    PGL_SPRITE_FLIP_H        = 0x01,  ///< Horizontal flip
+    PGL_SPRITE_FLIP_V        = 0x02,  ///< Vertical flip
+    PGL_SPRITE_SRC_SEQUENCE  = 0x04,  ///< textureId is an ImageSequence, not a Texture
+};
+
+/// CMD_LAYER_CLEAR (0xA9) — clear a layer to a solid color.
+struct PglCmdLayerClear {
+    PglLayer layerId;       ///< Target layer
+    uint16_t color;         ///< RGB565 clear color
+};
+static_assert(sizeof(PglCmdLayerClear) == 3, "PglCmdLayerClear must be 3 bytes");
+
+/// CMD_DRAW_ROUNDED_RECT (0xAA) — rectangle with rounded corners.
+struct PglCmdDrawRoundedRect {
+    PglLayer layerId;       ///< Target layer
+    int16_t  x;             ///< Top-left X
+    int16_t  y;             ///< Top-left Y
+    uint16_t w;             ///< Width
+    uint16_t h;             ///< Height
+    uint16_t radius;        ///< Corner radius in pixels
+    uint16_t color;         ///< RGB565 color
+    uint8_t  filled;        ///< 1 = filled, 0 = outline only
+};
+static_assert(sizeof(PglCmdDrawRoundedRect) == 14, "PglCmdDrawRoundedRect must be 14 bytes");
+
+/// CMD_DRAW_ARC (0xAB) — draw an arc segment.
+struct PglCmdDrawArc {
+    PglLayer layerId;       ///< Target layer
+    int16_t  cx;            ///< Center X
+    int16_t  cy;            ///< Center Y
+    uint16_t radius;        ///< Radius in pixels
+    int16_t  startAngleDeg; ///< Start angle in degrees (0 = right, CCW)
+    int16_t  endAngleDeg;   ///< End angle in degrees
+    uint16_t color;         ///< RGB565 color
+};
+static_assert(sizeof(PglCmdDrawArc) == 13, "PglCmdDrawArc must be 13 bytes");
+
+/// CMD_DRAW_TRIANGLE_2D (0xAC) — draw a filled 2D triangle.
+struct PglCmdDrawTriangle2D {
+    PglLayer layerId;       ///< Target layer
+    int16_t  x0, y0;       ///< Vertex 0
+    int16_t  x1, y1;       ///< Vertex 1
+    int16_t  x2, y2;       ///< Vertex 2
+    uint16_t color;         ///< RGB565 color
+};
+static_assert(sizeof(PglCmdDrawTriangle2D) == 15, "PglCmdDrawTriangle2D must be 15 bytes");
+
+// ─── Defragmentation Command Payload (0x3C, M12) ───────────────────────────
+
+/// CMD_MEM_DEFRAG (0x3C) — trigger memory defragmentation.
+struct PglCmdMemDefrag {
+    uint8_t  tier;          ///< PglMemTier to defragment (PGL_TIER_AUTO = all tiers)
+    uint8_t  mode;          ///< 0 = incremental (budget-limited), 1 = urgent (full compact)
+    uint16_t maxMoveKB;     ///< Max kilobytes to relocate this frame (incremental mode)
+};
+static_assert(sizeof(PglCmdMemDefrag) == 4, "PglCmdMemDefrag must be 4 bytes");
+
+/// Defrag mode enum.
+enum PglDefragMode : uint8_t {
+    PGL_DEFRAG_INCREMENTAL = 0,  ///< Move at most maxMoveKB per frame
+    PGL_DEFRAG_URGENT      = 1,  ///< Block pipeline, compact fully in one pass
+};
+
+// ─── Direct Framebuffer Write Payload (0x45, M12) ──────────────────────────
+
+/// CMD_WRITE_FRAMEBUFFER (0x45) — header; followed by w×h×2 bytes (RGB565).
+/// Writes a rectangular region of pixel data to a layer's framebuffer.
+struct PglCmdWriteFramebufferHeader {
+    PglLayer layerId;       ///< Target layer (0xFF = primary back buffer)
+    int16_t  x;             ///< Destination X
+    int16_t  y;             ///< Destination Y
+    uint16_t w;             ///< Width in pixels
+    uint16_t h;             ///< Height in pixels
+    // Followed by: w * h * sizeof(uint16_t) bytes of RGB565 pixel data
+};
+static_assert(sizeof(PglCmdWriteFramebufferHeader) == 9, "PglCmdWriteFramebufferHeader must be 9 bytes");
+
+// ─── Resource Persistence Payloads (0x46 – 0x48, M12) ──────────────────────
+
+/// CMD_PERSIST_RESOURCE (0x46) — queue a resource for flash writeback.
+struct PglCmdPersistResource {
+    uint8_t  resourceClass; ///< PglMemResourceClass
+    uint16_t resourceId;    ///< Resource handle
+    uint8_t  flags;         ///< bit0: overwriteExisting
+};
+static_assert(sizeof(PglCmdPersistResource) == 4, "PglCmdPersistResource must be 4 bytes");
+
+enum PglPersistFlags : uint8_t {
+    PGL_PERSIST_OVERWRITE = 0x01,  ///< Overwrite existing flash entry if present
+};
+
+/// CMD_RESTORE_RESOURCE (0x47) — load a resource from flash manifest to VRAM.
+struct PglCmdRestoreResource {
+    uint8_t  resourceClass; ///< PglMemResourceClass
+    uint16_t resourceId;    ///< Resource handle
+};
+static_assert(sizeof(PglCmdRestoreResource) == 3, "PglCmdRestoreResource must be 3 bytes");
+
+/// CMD_QUERY_PERSISTENCE (0x48) — query persistence status.
+/// Result available via PGL_REG_MEM_PERSIST_STATUS I2C register.
+struct PglCmdQueryPersistence {
+    uint8_t  resourceClass; ///< PglMemResourceClass (0xFF = query manifest-level)
+    uint16_t resourceId;    ///< Resource handle (ignored if class = 0xFF)
+};
+static_assert(sizeof(PglCmdQueryPersistence) == 3, "PglCmdQueryPersistence must be 3 bytes");
+
+// ─── M12 I2C Response Structs ──────────────────────────────────────────────
+
+/// Returned by PGL_REG_MEM_DEFRAG_STATUS (0x19).
+struct PglMemDefragStatusResponse {
+    uint8_t  state;             ///< 0 = idle, 1 = in-progress, 2 = completed
+    uint8_t  tier;              ///< Tier being/last defragmented
+    uint16_t movedKB;           ///< KB relocated in last/current pass
+    uint16_t fragmentCount;     ///< Current number of free-space fragments
+    uint16_t largestFreeKB;     ///< Largest contiguous free block in KB
+};
+static_assert(sizeof(PglMemDefragStatusResponse) == 8, "PglMemDefragStatusResponse must be 8 bytes");
+
+/// Defrag state enum.
+enum PglDefragState : uint8_t {
+    PGL_DEFRAG_IDLE       = 0,
+    PGL_DEFRAG_ACTIVE     = 1,
+    PGL_DEFRAG_COMPLETED  = 2,
+};
+
+/// Returned by PGL_REG_MEM_PERSIST_STATUS (0x1C).
+struct PglMemPersistStatusResponse {
+    uint8_t  state;             ///< 0 = idle, 1 = writing, 2 = restoring, 3 = error
+    uint8_t  queueDepth;        ///< Pending persist requests (0–4)
+    uint16_t manifestEntries;   ///< Total entries in flash manifest
+    uint16_t manifestCapacity;  ///< Max manifest entries (64)
+    uint32_t flashUsedBytes;    ///< Flash bytes consumed by persisted data
+    uint16_t lastResourceId;    ///< Last resource that completed persist/restore
+};
+static_assert(sizeof(PglMemPersistStatusResponse) == 12, "PglMemPersistStatusResponse must be 12 bytes");
+
+/// Persist state enum.
+enum PglPersistState : uint8_t {
+    PGL_PERSIST_IDLE     = 0,
+    PGL_PERSIST_WRITING  = 1,
+    PGL_PERSIST_RESTORING = 2,
+    PGL_PERSIST_ERROR    = 3,
+};
+
+/// Returned by PGL_REG_DIRTY_STATS (0x1D).
+struct PglDirtyStatsResponse {
+    uint32_t pushedBytes;       ///< Bytes pushed to display last frame
+    uint16_t skippedRegions;    ///< Number of clean regions skipped
+    uint16_t totalRegions;      ///< Total scanline regions tracked
+};
+static_assert(sizeof(PglDirtyStatsResponse) == 8, "PglDirtyStatsResponse must be 8 bytes");
 
 #pragma pack(pop)

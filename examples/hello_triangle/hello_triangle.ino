@@ -12,12 +12,15 @@
  *
  * Steps:
  *   1. Configure PglDevice (Octal SPI + I2C pins)
- *   2. Upload a pixel layout   (tells the GPU about the physical display)
- *   3. Upload a mesh            (3 vertices, 1 triangle)
- *   4. Upload a material        (solid magenta)
- *   5. Each frame: begin → set camera → draw → end
+ *   2. Query GPU capabilities
+ *   3. Configure display outputs (M11 DisplayDriver abstraction)
+ *   4. Set brightness
+ *   5. Upload a pixel layout   (tells the GPU about the physical display)
+ *   6. Upload a mesh            (3 vertices, 1 triangle)
+ *   7. Upload a material        (solid magenta)
+ *   8. Each frame: begin → set camera → draw → end
  *
- * ProtoGL API Specification v0.5
+ * ProtoGL API Specification v0.7
  */
 
 #include <Arduino.h>
@@ -58,7 +61,9 @@ static constexpr PglMesh     MESH_TRIANGLE = 0;
 static constexpr PglMaterial MAT_SOLID     = 0;
 static constexpr PglLayout   LAYOUT_PANEL  = 0;
 static constexpr PglCamera   CAM_MAIN      = 0;
-
+// Display slot IDs (M11)
+static constexpr PglDisplay  DISP_HUB75    = 0;   // Primary HUB75 panel
+static constexpr PglDisplay  DISP_HUD      = 1;   // I2C HUD OLED (optional)
 // ─── Globals ────────────────────────────────────────────────────────────────
 
 PglDevice gpu;
@@ -122,16 +127,50 @@ void setup() {
     Serial.printf("Max vertices: %u  triangles: %u  meshes: %u  materials: %u\n",
                   cap.maxVertices, cap.maxTriangles, cap.maxMeshes, cap.maxMaterials);
 
-    // ── 3. Set brightness (I2C) ─────────────────────────────────────────
+    // ── 3. Configure display outputs (M11) ─────────────────────────
+    //
+    // M11 introduces the DisplayDriver abstraction. Each display slot
+    // can host a different driver type. Slot 0 defaults to HUB75.
+    // We explicitly configure it here for clarity, then optionally
+    // enable the I2C HUD OLED on slot 1 for GPU status overlay.
+
+    // Query HUB75 display capabilities
+    PglDisplayCaps hub75Caps = gpu.QueryDisplayCaps(DISP_HUB75);
+    Serial.printf("Display 0: type=0x%02X  %ux%u  refresh=%u Hz\n",
+                  hub75Caps.displayType, hub75Caps.width, hub75Caps.height,
+                  hub75Caps.refreshHz);
+
+    gpu.BeginFrame(frameNumber, 0);
+    PglEncoder* enc = gpu.GetEncoder();
+
+    // Configure display slot 0: HUB75 panel (primary)
+    enc->DisplayConfigure(DISP_HUB75, PGL_DISPLAY_HUB75,
+                          PANEL_W, PANEL_H,
+                          PGL_PIXFMT_RGB565,
+                          PGL_DISP_FLAG_ENABLED,
+                          64);  // brightness
+
+    // (Optional) Configure display slot 1: I2C HUD OLED
+    // Uncomment to enable the GPU status overlay on a 128×64 OLED:
+    // enc->DisplayConfigure(DISP_HUD, PGL_DISPLAY_I2C_HUD,
+    //                       128, 64,
+    //                       PGL_PIXFMT_MONO1,
+    //                       PGL_DISP_FLAG_ENABLED | PGL_DISP_FLAG_HUD_AUTO,
+    //                       255);
+
+    gpu.EndFrame();
+    frameNumber++;
+
+    // ── 4. Set brightness (I2C) ───────────────────────────────────
 
     gpu.SetBrightness(64); // moderate brightness (0-255)
 
-    // ── 4. Upload pixel layout (tells GPU about the display geometry) ───
+    // ── 5. Upload pixel layout (tells GPU about the display geometry) ───
 
     // A single 64×64 rectangular grid, origin at center.
     // The GPU maps camera output to these pixel coordinates.
     gpu.BeginFrame(frameNumber, 0);
-    PglEncoder* enc = gpu.GetEncoder();
+    enc = gpu.GetEncoder();
 
     PglVec2 panelSize = { static_cast<float>(PANEL_W),
                           static_cast<float>(PANEL_H) };
@@ -141,7 +180,7 @@ void setup() {
                             panelSize, panelPos,
                             PANEL_H, PANEL_W);
 
-    // ── 5. Create triangle mesh ─────────────────────────────────────────
+    // ── 6. Create triangle mesh ────────────────────────────────────────
     //
     //        v0 (top center)
     //        /\
@@ -166,7 +205,7 @@ void setup() {
                     vertices, 3,
                     indices, 1);
 
-    // ── 6. Create a solid-color material (magenta) ──────────────────────
+    // ── 7. Create a solid-color material (magenta) ─────────────────────
 
     PglParamSimple magenta = { 255, 0, 255 };
 
