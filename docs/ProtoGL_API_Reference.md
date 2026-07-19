@@ -2,69 +2,84 @@
 
 > **Version:** 0.7 &nbsp;|&nbsp; **Generated for:** ProtoGL host library (ESP32-S3) + shared GPU types  
 > **Wire compatibility baseline:** v0.3 frozen format  
-> **Companion documents:** `docs/ProtoGL_API_Spec.md`, `docs/ProtoGL_Usage_And_Examples.md`
+> **Companion documents:** `docs/HowToUse.md`, `docs/ProtoGL_Usage_And_Examples.md`
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#1-overview)
-2. [ProtoGL.h — Umbrella Header](#2-protoglh--umbrella-header)
-3. [PglTypes.h — Types, Enumerations & Constants](#3-pgltypesh--types-enumerations--constants)
-   - 3.1 [Resource Handle Types](#31-resource-handle-types)
-   - 3.2 [Dimension & Limit Constants](#32-dimension--limit-constants)
-   - 3.3 [Wire Protocol Constants](#33-wire-protocol-constants)
-   - 3.4 [Enumerations](#34-enumerations)
-   - 3.5 [Wire-Format Structures](#35-wire-format-structures)
-   - 3.6 [I2C Response Structures](#36-i2c-response-structures)
-4. [PglOpcodes.h — Command Opcodes](#4-pglopcodesh--command-opcodes)
-5. [PglCRC16.h — CRC-16/XMODEM](#5-pglcrc16h--crc-16xmodem)
-6. [PglEncoder.h — Command Buffer Encoder](#6-pglencoderh--command-buffer-encoder)
-   - 6.1 [Construction & State](#61-construction--state)
-   - 6.2 [Frame Lifecycle](#62-frame-lifecycle)
-   - 6.3 [Camera Commands](#63-camera-commands)
-   - 6.4 [Draw Commands](#64-draw-commands)
-   - 6.5 [Built-in Shaders — General](#65-built-in-shaders--general)
-   - 6.6 [Built-in Shaders — Convolution](#66-built-in-shaders--convolution)
-   - 6.7 [Built-in Shaders — Displacement](#67-built-in-shaders--displacement)
-   - 6.8 [Built-in Shaders — Color Adjust](#68-built-in-shaders--color-adjust)
-   - 6.9 [Programmable Shaders (v0.6)](#69-programmable-shaders-v06)
-   - 6.10 [Mesh Resources](#610-mesh-resources)
-   - 6.11 [Material Resources](#611-material-resources)
-   - 6.12 [Texture Resources](#612-texture-resources)
-   - 6.13 [Pixel Layout](#613-pixel-layout)
-   - 6.14 [GPU Memory Access](#614-gpu-memory-access)
-7. [PglDevice.h — Host Device Driver](#7-pgldeviceh--host-device-driver)
-   - 7.1 [PglDeviceConfig](#71-pgldeviceconfig)
-   - 7.2 [PglDevice Lifecycle](#72-pgldevice-lifecycle)
-   - 7.3 [Frame Lifecycle](#73-frame-lifecycle)
-   - 7.4 [I2C Configuration](#74-i2c-configuration)
-   - 7.5 [Frame Statistics](#75-frame-statistics)
-8. [PglParser.h — Command Buffer Parser](#8-pglparserh--command-buffer-parser)
-9. [PglShaderBackend.h — Shader Math Backend](#9-pglshaderbackendh--shader-math-backend)
-   - 9.1 [Compile-Time Defines](#91-compile-time-defines)
-   - 9.2 [Arithmetic](#92-arithmetic)
-   - 9.3 [Math Functions](#93-math-functions)
-   - 9.4 [Rounding & Value Manipulation](#94-rounding--value-manipulation)
-   - 9.5 [Clamping & Interpolation](#95-clamping--interpolation)
-   - 9.6 [Geometric (2-D / 3-D)](#96-geometric-2-d--3-d)
-   - 9.7 [Texture Sampling & Pixel Packing](#97-texture-sampling--pixel-packing)
-10. [PglShaderBytecode.h — PSB Format](#10-pglshaderbytecodeh--psb-format)
-    - 10.1 [Constants](#101-constants)
-    - 10.2 [Operand Encoding](#102-operand-encoding)
-    - 10.3 [Inline Literal Table](#103-inline-literal-table)
-    - 10.4 [VM Opcodes](#104-vm-opcodes)
-    - 10.5 [Register Map](#105-register-map)
-    - 10.6 [Auto-Bound Uniforms](#106-auto-bound-uniforms)
-    - 10.7 [Structs & Enums](#107-structs--enums)
-    - 10.8 [Standalone Functions](#108-standalone-functions)
-11. [PglShaderCompiler.h — PGLSL Compiler](#11-pglshadercompilerh--pglsl-compiler)
-    - 11.1 [CompileResult](#111-compileresult)
-    - 11.2 [Public API](#112-public-api)
-    - 11.3 [Compiler Internals (private)](#113-compiler-internals-private)
-12. [PglJobScheduler.h — Job Scheduler Interface](#12-pgjobschedulerh--job-scheduler-interface)
-13. [PglJobScheduler_SingleCore.h — Serial Fallback](#13-pgljobscheduler_singlecoreh--serial-fallback)
-14. [Quick Cross-Reference](#14-quick-cross-reference)
+2. [Object Model](#2-object-model)
+   - 2.1 [Object Summary](#21-object-summary)
+   - 2.2 [Device](#22-device)
+   - 2.3 [Queue](#23-queue)
+   - 2.4 [CommandBuffer](#24-commandbuffer)
+   - 2.5 [Mesh](#25-mesh)
+   - 2.6 [Texture](#26-texture)
+   - 2.7 [Sampler (implicit in v1)](#27-sampler-implicit-in-v1)
+   - 2.8 [ShaderProgram](#28-shaderprogram)
+   - 2.9 [Pipeline (Material)](#29-pipeline-material)
+   - 2.10 [RenderPass (Frame)](#210-renderpass-frame)
+   - 2.11 [Layer](#211-layer)
+   - 2.12 [Fence (Frame Number)](#212-fence-frame-number)
+   - 2.13 [Lifecycle of a Frame](#213-lifecycle-of-a-frame)
+   - 2.14 [Handle Semantics & Ownership](#214-handle-semantics--ownership)
+3. [ProtoGL.h — Umbrella Header](#3-protoglh--umbrella-header)
+4. [PglTypes.h — Types, Enumerations & Constants](#4-pgltypesh--types-enumerations--constants)
+   - 4.1 [Resource Handle Types](#41-resource-handle-types)
+   - 4.2 [Dimension & Limit Constants](#42-dimension--limit-constants)
+   - 4.3 [Wire Protocol Constants](#43-wire-protocol-constants)
+   - 4.4 [Enumerations](#44-enumerations)
+   - 4.5 [Wire-Format Structures](#45-wire-format-structures)
+   - 4.6 [I2C Response Structures](#46-i2c-response-structures)
+5. [PglOpcodes.h — Command Opcodes](#5-pglopcodesh--command-opcodes)
+6. [PglCRC16.h — CRC-16/XMODEM](#6-pglcrc16h--crc-16xmodem)
+7. [PglEncoder.h — Command Buffer Encoder](#7-pglencoderh--command-buffer-encoder)
+   - 7.1 [Construction & State](#71-construction--state)
+   - 7.2 [Frame Lifecycle](#72-frame-lifecycle)
+   - 7.3 [Camera Commands](#73-camera-commands)
+   - 7.4 [Draw Commands](#74-draw-commands)
+   - 7.5 [Built-in Shaders — General](#75-built-in-shaders--general)
+   - 7.6 [Built-in Shaders — Convolution](#76-built-in-shaders--convolution)
+   - 7.7 [Built-in Shaders — Displacement](#77-built-in-shaders--displacement)
+   - 7.8 [Built-in Shaders — Color Adjust](#78-built-in-shaders--color-adjust)
+   - 7.9 [Programmable Shaders (v0.6)](#79-programmable-shaders-v06)
+   - 7.10 [Mesh Resources](#710-mesh-resources)
+   - 7.11 [Material Resources](#711-material-resources)
+   - 7.12 [Texture Resources](#712-texture-resources)
+   - 7.13 [Pixel Layout](#713-pixel-layout)
+   - 7.14 [GPU Memory Access](#714-gpu-memory-access)
+8. [PglDevice.h — Host Device Driver](#8-pgldeviceh--host-device-driver)
+   - 8.1 [PglDeviceConfig](#81-pgldeviceconfig)
+   - 8.2 [PglDevice Lifecycle](#82-pgldevice-lifecycle)
+   - 8.3 [Frame Lifecycle](#83-frame-lifecycle)
+   - 8.4 [Configuration](#84-configuration)
+   - 8.5 [Frame Statistics](#85-frame-statistics)
+9. [PglParser.h — Command Buffer Parser](#9-pglparserh--command-buffer-parser)
+10. [PglShaderBackend.h — Shader Math Backend](#10-pglshaderbackendh--shader-math-backend)
+    - 10.1 [Compile-Time Defines](#101-compile-time-defines)
+    - 10.2 [Arithmetic](#102-arithmetic)
+    - 10.3 [Math Functions](#103-math-functions)
+    - 10.4 [Rounding & Value Manipulation](#104-rounding--value-manipulation)
+    - 10.5 [Clamping & Interpolation](#105-clamping--interpolation)
+    - 10.6 [Geometric (2-D / 3-D)](#106-geometric-2-d--3-d)
+    - 10.7 [Texture Sampling & Pixel Packing](#107-texture-sampling--pixel-packing)
+11. [PglShaderBytecode.h — PSB Format](#11-pglshaderbytecodeh--psb-format)
+    - 11.1 [Constants](#111-constants)
+    - 11.2 [Operand Encoding](#112-operand-encoding)
+    - 11.3 [Inline Literal Table](#113-inline-literal-table)
+    - 11.4 [VM Opcodes](#114-vm-opcodes)
+    - 11.5 [Register Map](#115-register-map)
+    - 11.6 [Auto-Bound Uniforms](#116-auto-bound-uniforms)
+    - 11.7 [Structs & Enums](#117-structs--enums)
+    - 11.8 [Standalone Functions](#118-standalone-functions)
+12. [PglShaderCompiler.h — PGLSL Compiler](#12-pglshadercompilerh--pglsl-compiler)
+    - 12.1 [CompileResult](#121-compileresult)
+    - 12.2 [Public API](#122-public-api)
+    - 12.3 [Compiler Internals (private)](#123-compiler-internals-private)
+13. [PglJobScheduler.h — Job Scheduler Interface](#13-pgljobschedulerh--job-scheduler-interface)
+14. [PglJobScheduler_SingleCore.h — Serial Fallback](#14-pgljobscheduler_singlecoreh--serial-fallback)
+15. [Quick Cross-Reference](#15-quick-cross-reference)
 
 ---
 
@@ -93,7 +108,363 @@ The library is split into:
 
 ---
 
-## 2. ProtoGL.h — Umbrella Header
+## 2. Object Model
+
+ProtoGL is deliberately shaped like a minimal Vulkan: a small fixed set of object
+kinds, one frame encoder, immutable pipeline-like state, and explicit frame
+boundaries. This section names those objects, defines their lifecycles and
+ownership, and maps each to its concrete realisation in the current headers
+(`src/`, wire spec v0.7.3). It is the contract that GPU implementations
+(RP2350-ProtoGPU firmware, TinyGPU-FPGA hardware) are built against.
+`File.h:line` citations refer to the current source tree.
+
+**Terminology:** *host* = the MCU running this library (ESP32-S3); *GPU* = the
+device on the other end of the wire that parses and executes command buffers.
+
+### 2.1 Object Summary
+
+| Object | Vulkan analog | Realisation today | Nature |
+|---|---|---|---|
+| Device | `VkDevice` + `VkPhysicalDevice` | `PglDevice` class (`PglDevice.h:69`) | concrete host type |
+| Queue | `VkQueue` (exactly one) | submission path inside `PglDevice::EndFrame` (`PglDevice.h:202`) | conceptual singleton |
+| CommandBuffer | `VkCommandBuffer` | `PglEncoder` over a byte buffer (`PglEncoder.h:26`); two ping-pong buffers owned by the device (`PglDevice.h:597`) | concrete host type |
+| Mesh | vertex/index `VkBuffer` | `PglMesh` = `uint16_t` (`PglTypes.h:18`) | GPU resource handle |
+| Texture | `VkImage` | `PglTexture` = `uint16_t` (`PglTypes.h:20`) | GPU resource handle |
+| Sampler | `VkSampler` | none — fixed sampling, see §2.7 | **implicit (not realised in v1)** |
+| ShaderProgram | `VkShaderModule` | `uint16_t programId` + PSB1 blob (`PglTypes.h:373`, `PglShaderBytecode.h:43`) | GPU resource handle |
+| Pipeline | `VkPipeline` (PSO) | `PglMaterial` = `uint16_t` (`PglTypes.h:19`), see §2.9 | GPU resource handle |
+| RenderPass | `VkRenderPass` + `VkFramebuffer` | the frame itself: `PGL_CMD_BEGIN_FRAME` / `PGL_CMD_END_FRAME` (`PglOpcodes.h:81`, `PglOpcodes.h:92`) | implicit, per-frame |
+| Layer | offscreen attachment / subpass input | `PglLayer` = `uint8_t` (`PglTypes.h:25`) | GPU resource handle |
+| Fence | `VkFence` | frame number + DMA-done semaphore + IRQ/status, see §2.12 | implicit |
+
+### 2.2 Device
+
+**Definition.** The root host-side object: owns the transport (Octal SPI data
+plane + I2C management plane), the command buffers, and the encoder. One
+`PglDevice` talks to exactly one GPU.
+
+**Realisation.** `class PglDevice` (`PglDevice.h:69`), configured by
+`PglDeviceConfig` (`PglDevice.h:35`). Non-copyable (`PglDevice.h:75-76`).
+
+**Lifecycle.** `Initialize()` (`PglDevice.h:82`) allocates the two ping-pong
+command buffers (`commandBufferSize × 2`, default 32 KB each — `PglDevice.h:55`,
+`PglDevice.h:86-92`), constructs the encoder, and starts SPI/I2C. `Destroy()`
+(`PglDevice.h:142`) waits for in-flight DMA and frees everything; it is called
+from the destructor (`PglDevice.h:72`) and is safe to call repeatedly.
+
+**Ownership.** Purely host-side; the GPU only ever sees the byte stream. Device
+*discovery* (the `VkPhysicalDevice` half) is the I2C capability query:
+`QueryCapability()` (`PglDevice.h:266`) returns `PglCapabilityResponse`
+(`PglTypes.h:936-950`), whose `gpuArch` field (`PglGpuArch`,
+`PglTypes.h:808-818`) identifies the backend — including the reserved
+`PGL_ARCH_FPGA` (`PglTypes.h:815`).
+
+**Vulkan analog.** `VkDevice` and `VkPhysicalDevice` rolled into one object.
+
+### 2.3 Queue
+
+**Definition.** The single submission channel. Exactly one exists — there is no
+multi-queue, no priorities, no out-of-order submission.
+
+**Realisation.** Conceptual — there is no queue type. Submission is
+`PglDevice::EndFrame()` (`PglDevice.h:202`) handing the finished buffer to the
+DMA engine via `SubmitDMAAsync()` (`PglDevice.h:495`). FIFO ordering is
+structural: one DMA channel with `trans_queue_depth = 2` (`PglDevice.h:450`),
+commands executed by the GPU in wire order. The frame is the atomic unit: the
+GPU validates the sync word and CRC-16 before executing any command in it
+(`PglValidateFrameCRC`, `PglParser.h:130`).
+
+**Vulkan analog.** `vkQueueSubmit` on the device's only `VkQueue`, minus the
+explicit object.
+
+### 2.4 CommandBuffer
+
+**Definition.** The recording unit: a linear byte buffer holding exactly one
+frame — 12-byte `PglFrameHeader` (`PglTypes.h:177-183`), then commands (3-byte
+`PglCommandHeader` + payload each, `PglTypes.h:191-195`), then a CRC-16 footer
+(`PglTypes.h:185-187`).
+
+**Realisation.** `PglEncoder` (`PglEncoder.h:26`) records into an
+externally-owned buffer. The device owns two of them (`cmdBuffers_[2]`,
+`PglDevice.h:597`) and alternates per frame (`PglDevice.h:188`), so frame N
+transmits over DMA while frame N+1 is being recorded.
+
+**Lifecycle.** Acquire/reset: `BeginFrame(frameNumber, frameTimeUs)`
+(`PglEncoder.h:64`) writes the header and `CMD_BEGIN_FRAME`. Record: one method
+per wire command. Finalise: `EndFrame()` (`PglEncoder.h:87`) writes
+`CMD_END_FRAME`, patches `totalLength`/`commandCount`, and appends the CRC
+(`PglEncoder.h:93-105`). Overflow sets a sticky flag (`PglEncoder.h:46`)
+instead of throwing; the device drops overflowed frames (`PglDevice.h:207-210`).
+
+**Ownership.** Host memory, host-written, GPU-read via DMA. The GPU-side mirror
+is `PglParser` — alignment-safe reads, never struct casts (`PglParser.h:64`).
+
+**Vulkan analog.** `VkCommandBuffer`; `BeginFrame`/`EndFrame` ≈
+`vkBeginCommandBuffer`/`vkEndCommandBuffer`.
+
+### 2.5 Mesh
+
+**Definition.** GPU-resident geometry: vertex positions (+ optional UVs) and
+triangle indices.
+
+**Realisation.** `PglMesh` = `uint16_t` (`PglTypes.h:18`), sentinel
+`PGL_INVALID_MESH` (`PglTypes.h:27`). Capacity `PGL_MAX_MESHES` = 256
+(`PglTypes.h:91`); per-mesh bounds `PGL_MAX_VERTICES` = 2048,
+`PGL_MAX_TRIANGLES` = 1024 (`PglTypes.h:98-99`). Wire payload:
+`PglCmdCreateMeshHeader` + variable arrays (`PglTypes.h:413-419`).
+
+**Lifecycle.** `CreateMesh` (`PglEncoder.h:434`; opcode `PGL_CMD_CREATE_MESH`,
+`PglOpcodes.h:21`) → optional `UpdateVertices` (`PglEncoder.h:473`) or
+bandwidth-efficient `UpdateVerticesDelta` (`PglEncoder.h:484`) → `DestroyMesh`
+(`PglEncoder.h:467`). `DrawObjectMorphed` (`PglEncoder.h:150`) draws with a
+per-frame vertex override without mutating the stored resource.
+
+**Ownership.** Data lives GPU-side (tier-managed; resource class
+`PGL_RES_CLASS_MESH`, `PglTypes.h:82`). The host keeps only the integer handle.
+
+**Vulkan analog.** A vertex+index buffer pair (buffer and view conflated into
+one handle).
+
+### 2.6 Texture
+
+**Definition.** GPU-resident pixel data referenced by materials and 2D sprites.
+
+**Realisation.** `PglTexture` = `uint16_t` (`PglTypes.h:20`), sentinel
+`PGL_INVALID_TEXTURE` (`PglTypes.h:29`). Capacity `PGL_MAX_TEXTURES` = 64
+(`PglTypes.h:93`). Formats: `PglTextureFormat` — RGB565 or RGB888
+(`PglTypes.h:716-719`).
+
+**Lifecycle.** `CreateTexture` (`PglEncoder.h:533`; opcode
+`PGL_CMD_CREATE_TEXTURE`, `PglOpcodes.h:30`) → `DestroyTexture`
+(`PglEncoder.h:552`). No partial-update texture opcode exists in the current
+tree — replacement means destroy + recreate. Textures are referenced from
+materials via `PglParamImage.textureId` (`PglTypes.h:771`) and from sprites via
+`PglCmdDrawSprite.textureId` (`PglTypes.h:1093`).
+
+**Ownership.** Pixels live GPU-side (tier-managed; `PGL_RES_CLASS_TEXTURE`,
+`PglTypes.h:84`). The host keeps only the handle.
+
+**Vulkan analog.** `VkImage` (+ `VkImageView` conflated).
+
+### 2.7 Sampler (implicit in v1)
+
+**Definition.** The state controlling how a texture is read (filter mode, wrap
+mode, mip selection).
+
+**Realisation.** **None — no handle, no struct, no opcode.** Sampling behaviour
+is fixed by the implementation: nearest-neighbour only (host-side reference
+implementation: `TexSample`, `PglShaderBackend.h:362-363`; the PSB VM has a
+single `TEX2D` instruction, `PglShaderBytecode.h:191`). There are no mipmaps and
+no filtering/wrap controls anywhere in the wire format. Bilinear filtering and
+an optional 2-level mip are roadmap items — see
+[PROTOGL_3D_API_DESIGN.md](../../../docs/PROTOGL_3D_API_DESIGN.md) §2.2 (gap G6)
+and §3.2.
+
+**Vulkan analog.** `VkSampler` — deliberately omitted in v1. When added, it
+will need a wire home: new fields on material params, or a per-material sampler
+id (protocol bump).
+
+### 2.8 ShaderProgram
+
+**Definition.** A compiled PSB1 bytecode blob executed by the GPU's shader VM.
+
+**Realisation.** `uint16_t programId` (no typedef), capacity
+`PGL_MAX_SHADER_PROGRAMS` = 16 (`PglTypes.h:410`). The blob is
+`PglShaderProgramHeader` + uniform descriptors + constants + 4-byte
+instructions (`PglShaderBytecode.h:43-53`), ≤ `PSB_MAX_PROGRAM_SIZE` = 1296
+bytes (`PglShaderBytecode.h:33`). Produced on the host by
+`PglShaderCompiler::Compile()` (`PglShaderCompiler.h:55`).
+
+**Lifecycle.** `CreateShaderProgram` (`PglEncoder.h:334`) → `BindShaderProgram`
+into a camera shader slot (`PglEncoder.h:367`; `PGL_MAX_SHADERS_PER_CAMERA` = 4
+slots per camera, `PglTypes.h:311`) → `SetShaderUniform` (`PglEncoder.h:378`)
+→ `DestroyShaderProgram` (`PglEncoder.h:350`).
+
+**Scope, stated plainly.** In v1, PSB programs run **per pixel,
+post-rasterisation**, as screen-space post-effects bound to camera slots
+(shader class `PGL_SHADER_PROGRAM`, `PglTypes.h:273`). The 3D pipeline itself
+has **no vertex-stage and no fragment-stage programmability** — the transform
+and the 12 material types are fixed function (design doc gaps G1/G2; VS/FS-PSB
+is the V10 roadmap item). Discovery also has a known wrinkle: the shader-VM
+capability bit `PGL_CAP_SHADER_VM` = 1<<8 (`PglTypes.h:407`) does not fit the
+`uint8_t` flags field of `PglCapabilityResponse` — widening it is a protocol-v8
+item (`PglTypes.h:401-406` comment).
+
+**Ownership.** Bytecode is uploaded to and stored by the GPU; the host keeps
+only the id and any uniform values it re-sends.
+
+**Vulkan analog.** `VkShaderModule`.
+
+### 2.9 Pipeline (Material)
+
+**Definition.** The immutable-state bundle bound per draw — ProtoGL's PSO. A
+material fixes the *shader class* (one of 12 fixed `PglMaterialType` values,
+`PglTypes.h:676-695`), the *blend state* (`PglBlendMode`, 12 modes,
+`PglTypes.h:699-712`), and a type-specific *parameter blob*
+(e.g. `PglParamLight`, 18 B, `PglTypes.h:751-756`; `PglParamImage`, which
+references a texture, `PglTypes.h:770-775`).
+
+**Realisation.** `PglMaterial` = `uint16_t` (`PglTypes.h:19`), capacity
+`PGL_MAX_MATERIALS` = 256 (`PglTypes.h:92`). Wire header:
+`PglCmdCreateMaterialHeader` (`PglTypes.h:451-455`). Bound per draw call by id
+in `DrawObject` (`PglEncoder.h:128`; `PglCmdDrawObject.materialId`,
+`PglTypes.h:227`).
+
+**Lifecycle.** `CreateMaterial` (`PglEncoder.h:497`) → `UpdateMaterial`
+(`PglEncoder.h:513`) → `DestroyMaterial` (`PglEncoder.h:525`).
+
+**Caveat.** Unlike a Vulkan PSO, the parameter blob is mutable in place via
+`UpdateMaterial` — a material is precisely "PSO state + a small push-constant
+block". What makes it pipeline-like is the fixed 12-type shader set: creation
+is cheap, binding is an integer, and no compilation ever happens on the GPU.
+
+**Ownership.** The param blob lives GPU-side in SRAM (it is read at per-pixel
+frequency); the host keeps the handle.
+
+**Vulkan analog.** `VkPipeline` (graphics PSO), with the mutability caveat
+above.
+
+### 2.10 RenderPass (Frame)
+
+**Definition.** The unit of rendering with defined begin/end and fixed
+attachments. In ProtoGL the render pass *is* the frame.
+
+**Realisation.** Implicit — there is no pass object. `PGL_CMD_BEGIN_FRAME` /
+`PGL_CMD_END_FRAME` (`PglOpcodes.h:81`, `PglOpcodes.h:92`) bracket the pass;
+the payloads `PglCmdBeginFrame` / `PglCmdEndFrame` (`PglTypes.h:213-222`)
+carry and echo the frame number. Attachments are fixed: the 3D scene renders
+into layer 0 (`PGL_LAYER_3D` = 0, `PglTypes.h:109`) — the double-buffered back
+buffer — and the 2D layers are composited over it at end of frame. Exactly one
+pass per submission; the whole pass is CRC-protected and executed atomically.
+
+**Gaps.** No render-to-texture / offscreen 3D targets and no multi-pass in v1
+(design doc gaps G3/G7; multi-camera + layer targets are V9 roadmap items).
+
+**Vulkan analog.** A `VkRenderPass` instance + `VkFramebuffer`, reduced to a
+single fixed configuration.
+
+### 2.11 Layer
+
+**Definition.** A compositing plane with its own framebuffer, blended over the
+3D scene in z-order.
+
+**Realisation.** `PglLayer` = `uint8_t` (`PglTypes.h:25`), sentinel
+`PGL_INVALID_LAYER` (`PglTypes.h:34`). Capacity `PGL_MAX_LAYERS` = 8
+(`PglTypes.h:108`); layer 0 is reserved for the 3D scene (`PglTypes.h:109`,
+`PglOpcodes.h:103`), layers 1–7 are user-created. Each layer owns a GPU-side
+framebuffer of `width × height × pixelFormat` (`PglCmdLayerCreate`,
+`PglTypes.h:1028-1036`).
+
+**Lifecycle.** `LayerCreate` (`PglEncoder.h:858`) → `LayerSetProps`
+(opacity/blend/offset, `PglEncoder.h:885`; `PglLayerBlendMode`,
+`PglTypes.h:1019-1023`) → `LayerClear` (`PglEncoder.h:964`) → `LayerDestroy`
+(`PglEncoder.h:876`). 2D primitives target a layer (`DrawRect2D` …
+`DrawTriangle2D`, `PglEncoder.h:900-1021`), as does `WriteFramebuffer`
+(`PglEncoder.h:1057`).
+
+**Ownership.** The framebuffer lives GPU-side; the host keeps the handle.
+Compositing runs on the GPU after all draw commands of the frame complete.
+
+**Vulkan analog.** No exact equivalent — closest to an offscreen colour
+attachment consumed by a later compositing subpass.
+
+### 2.12 Fence (Frame Number)
+
+**Definition.** The synchronisation token that tells the host when submitted
+work is done.
+
+**Realisation.** Implicit — there is no fence object. The **frame number**
+(`PglFrameHeader.frameNumber`, `PglTypes.h:179`, echoed by the BEGIN/END_FRAME
+payloads) is the token, and "completion" has two distinct meanings:
+
+1. **Transfer complete** (host buffer reusable): the counting semaphore
+   `dmaDoneSem_` (created with count/max 2, `PglDevice.h:423`) is given by the
+   `OnDMADone` ISR (`PglDevice.h:412-419`) and taken before each submission
+   (`PglDevice.h:500`). Before overwriting a buffer, `BeginFrame` consults it
+   via `WaitForDMAComplete` (`PglDevice.h:522-538`). This gates **buffer
+   reuse**, not GPU render completion — and it is ordering-based/approximate
+   by design (see the comment at `PglDevice.h:524-532`).
+2. **Render complete** (GPU finished the frame): observed out-of-band — the
+   IRQ pin releases backpressure (`IsGpuReady`, `PglDevice.h:394-401`; gated
+   in `EndFrame` via `WaitForReady`, `PglDevice.h:213-216` and
+   `PglDevice.h:471-493`), and the I2C status query reports the busy bit
+   (`PglStatusResponse.flags` / `PGL_STATUS_RENDER_BUSY`,
+   `PglTypes.h:864-876`; `QueryStatus`, `PglDevice.h:255`).
+
+**Gap.** The status response carries FPS, drop counts and flags but **no
+last-completed frame number**, so "wait until frame N is rendered" cannot be
+expressed precisely today — a frame-completion query is a known protocol-v8
+item.
+
+**Vulkan analog.** `VkFence` — coarse (one per frame in flight), polled rather
+than waited on.
+
+### 2.13 Lifecycle of a Frame
+
+The canonical usage pattern ties Device → CommandBuffer → RenderPass → Fence
+together. This is the real `PglDevice` flow (`PglDevice.h:184-219`):
+
+```cpp
+PglDevice gpu;                     // Device (+ its single Queue)
+gpu.Initialize(cfg);               // allocates 2 CommandBuffers (ping-pong)
+
+// Resources (Mesh, Pipeline/Material, Texture, ShaderProgram, Layer) are
+// created by recording Create* commands in a frame — typically frame 0.
+
+uint32_t frameNumber = 0;
+for (;;) {
+    gpu.BeginFrame(frameNumber, dtUs);     // 1. acquire: swap to the idle
+                                           //    CommandBuffer, wait for its
+                                           //    previous DMA (Fence), write
+                                           //    header + CMD_BEGIN_FRAME
+    PglEncoder* cb = gpu.GetEncoder();     // 2. record the RenderPass contents
+    cb->SetCamera(/* … */);                //    pass state
+    cb->DrawObject(mesh, material, /*…*/); //    bind Mesh + Pipeline per draw
+    cb->SetConvolution(/* … */);           //    post-process state
+    gpu.EndFrame();                        // 3. CMD_END_FRAME + CRC-16; drop on
+                                           //    overflow / GPU-not-ready; else
+                                           //    submit async DMA to the Queue
+    ++frameNumber;                         // 4. Fence token of this submission
+}
+```
+
+Step by step:
+
+1. **Acquire** — `PglDevice::BeginFrame` (`PglDevice.h:184`): swap
+   `activeBuffer_` (:188), wait for that buffer's previous DMA (:193), reset
+   the encoder in place (:195-196), write the frame header + `CMD_BEGIN_FRAME`
+   (`PglEncoder.h:64-82`).
+2. **Record** — encoder methods between Begin/End (`GetEncoder`,
+   `PglDevice.h:179`). Resource commands may appear in any frame; draw calls
+   and 2D primitives are consumed by the frame they are recorded in.
+3. **Submit** — `PglDevice::EndFrame` (`PglDevice.h:202`): finalise + CRC
+   (`PglEncoder.h:87-106`); overflow → drop and count (:207-210); GPU not
+   ready → drop and count (:213-216); otherwise `SubmitDMAAsync` (:218),
+   which returns immediately.
+4. **Complete** — the DMA-done ISR returns the semaphore (§2.12), freeing the
+   buffer for reuse two frames later. GPU-side completion is observable via
+   IRQ release and the I2C status busy bit.
+
+### 2.14 Handle Semantics & Ownership
+
+- **Handles are host-chosen plain integers**, not pointers or classes
+  (`PglTypes.h:18-25`). The GPU owns all referenced data; the host owns only
+  the id. Invalid sentinels: `PGL_INVALID_*` (`PglTypes.h:27-34`).
+- **No generation counters.** A stale handle reused after destroy + recreate
+  silently refers to the new resource; generation-tagged handles are a V8
+  roadmap item (design doc §3.1, item 2). Do not reference a handle in the
+  same frame that destroys it.
+- **Persistent vs per-frame state.** Meshes, materials, textures, shader
+  programs, layers, cameras, layouts and memory allocations persist GPU-side
+  until explicitly destroyed. The draw list and the 2D command queue are
+  per-frame: the GPU clears them at every `CMD_BEGIN_FRAME` (see
+  [ARCHITECTURE.md](../../../docs/ARCHITECTURE.md), host↔GPU frame flow).
+  Everything a frame needs must therefore be re-recorded every frame —
+  except the persistent resources it references by handle.
+
+---
+
+## 3. ProtoGL.h — Umbrella Header
 
 ```cpp
 #include "ProtoGL.h"
@@ -112,9 +483,9 @@ Include **only** `ProtoGL.h` in application code.
 
 ---
 
-## 3. PglTypes.h — Types, Enumerations & Constants
+## 4. PglTypes.h — Types, Enumerations & Constants
 
-### 3.1 Resource Handle Types
+### 4.1 Resource Handle Types
 
 All handles are lightweight integer typedefs. They identify GPU-side resources.
 
@@ -127,7 +498,7 @@ All handles are lightweight integer typedefs. They identify GPU-side resources.
 | `PglLayout` | `uint8_t` | Pixel-layout identifier |
 | `PglMemHandle` | `uint16_t` | Opaque memory allocation handle |
 
-### 3.2 Dimension & Limit Constants
+### 4.2 Dimension & Limit Constants
 
 | Constant | Value | Description |
 |---|---|---|
@@ -144,7 +515,7 @@ All handles are lightweight integer typedefs. They identify GPU-side resources.
 | `PGL_MAX_TRIANGLES` | `8192` | Max triangles per mesh |
 | `PGL_MAX_SHADER_PROGRAMS` | `16` | Maximum shader program resources |
 
-### 3.3 Wire Protocol Constants
+### 4.3 Wire Protocol Constants
 
 | Constant | Value | Description |
 |---|---|---|
@@ -153,7 +524,7 @@ All handles are lightweight integer typedefs. They identify GPU-side resources.
 | `PGL_FRAME_HEADER_SIZE` | `12` | Frame header size in bytes |
 | `PGL_I2C_DEFAULT_ADDR` | `0x3C` | Default GPU I2C slave address |
 
-### 3.4 Enumerations
+### 4.4 Enumerations
 
 #### `PglMaterialType : uint8_t`
 
@@ -334,7 +705,7 @@ All handles are lightweight integer typedefs. They identify GPU-side resources.
 | 1 | `PGL_ALLOC_OOM` | Out of memory |
 | 2 | `PGL_ALLOC_INVALID_TIER` | Invalid memory tier |
 
-### 3.5 Wire-Format Structures
+### 4.5 Wire-Format Structures
 
 All structures are `__attribute__((packed))` and little-endian.
 
@@ -414,7 +785,7 @@ All structures are `__attribute__((packed))` and little-endian.
 | `blendMode` | `PglBlendMode` | Blend mode |
 | `dataSize` | `uint16_t` | Size of following type-specific data |
 
-### 3.6 I2C Response Structures
+### 4.6 I2C Response Structures
 
 #### `PglStatusResponse` (8 bytes)
 
@@ -487,7 +858,7 @@ I2C register: `MEM_PERSIST_STATUS` (0x1C). SPI read: `SPI_READ_PERSIST_STATUS` (
 
 ---
 
-## 4. PglOpcodes.h — Command Opcodes
+## 5. PglOpcodes.h — Command Opcodes
 
 Every command in the binary frame stream begins with a `PglCommandHeader` whose
 `opcode` field is one of the constants below.
@@ -613,7 +984,7 @@ Every command in the binary frame stream begins with a `PglCommandHeader` whose
 
 ---
 
-## 5. PglCRC16.h — CRC-16/XMODEM
+## 6. PglCRC16.h — CRC-16/XMODEM
 
 Frame integrity is verified with CRC-16/XMODEM (polynomial 0x1021).
 
@@ -644,13 +1015,13 @@ crc = PglCRC16::Update(crc, payload, payloadLen);
 
 ---
 
-## 6. PglEncoder.h — Command Buffer Encoder
+## 7. PglEncoder.h — Command Buffer Encoder
 
 `PglEncoder` serialises GPU commands into a pre-allocated byte buffer. It is the
 primary host-side API — every draw call, resource upload, shader configuration, and
 memory operation passes through the encoder.
 
-### 6.1 Construction & State
+### 7.1 Construction & State
 
 ```cpp
 PglEncoder(uint8_t* buffer, size_t capacity);
@@ -672,7 +1043,7 @@ PglEncoder(uint8_t* buffer, size_t capacity);
 > **Note:** After an overflow the frame is corrupt. Check `HasOverflow()` before
 > calling `EndFrame()`.
 
-### 6.2 Frame Lifecycle
+### 7.2 Frame Lifecycle
 
 | Method | Signature | Description |
 |---|---|---|
@@ -687,7 +1058,7 @@ encoder->BeginFrame(frameNum, micros());
 encoder->EndFrame();
 ```
 
-### 6.3 Camera Commands
+### 7.3 Camera Commands
 
 ```cpp
 void SetCamera(PglCamera cameraId,
@@ -711,7 +1082,7 @@ void SetCamera(PglCamera cameraId,
 
 Emits `PGL_OP_SET_CAMERA`.
 
-### 6.4 Draw Commands
+### 7.4 Draw Commands
 
 ```cpp
 void DrawObject(PglCamera cameraId,
@@ -733,7 +1104,7 @@ void DrawObject(PglCamera cameraId,
 
 Emits `PGL_OP_DRAW_OBJECT`. Max `PGL_MAX_DRAW_CALLS` (64) per frame.
 
-### 6.5 Built-in Shaders — General
+### 7.5 Built-in Shaders — General
 
 ```cpp
 void SetShader(PglCamera cameraId, uint8_t slot, const PglShaderParams& params);
@@ -745,7 +1116,7 @@ void ClearShader(PglCamera cameraId, uint8_t slot);
 | `SetShader` | Assign a fully-populated `PglShaderParams` to a camera's shader slot (0–7). |
 | `ClearShader` | Clear a shader slot, disabling the post-process effect. |
 
-### 6.6 Built-in Shaders — Convolution
+### 7.6 Built-in Shaders — Convolution
 
 | Method | Signature |
 |---|---|
@@ -781,7 +1152,7 @@ void ClearShader(PglCamera cameraId, uint8_t slot);
 - `SetRadialBlur` — box kernel, auto-rotating at `rotationPeriod` seconds
 - `SetAntiAliasing` — separable 4-neighbour smoothing, 2D Gaussian
 
-### 6.7 Built-in Shaders — Displacement
+### 7.7 Built-in Shaders — Displacement
 
 | Method | Signature |
 |---|---|
@@ -809,7 +1180,7 @@ void ClearShader(PglCamera cameraId, uint8_t slot);
 - `SetPhaseOffsetY` — vertical chromatic aberration
 - `SetPhaseOffsetR` — radial chromatic aberration with independent phase animation
 
-### 6.8 Built-in Shaders — Color Adjust
+### 7.8 Built-in Shaders — Color Adjust
 
 | Method | Signature |
 |---|---|
@@ -836,7 +1207,7 @@ void ClearShader(PglCamera cameraId, uint8_t slot);
 | `SetContrast` | `PGL_CADJ_CONTRAST` | Multiplicative contrast |
 | `SetGamma` | `PGL_CADJ_GAMMA` | Power-curve correction, default exponent 2.2 |
 
-### 6.9 Programmable Shaders (v0.6)
+### 7.9 Programmable Shaders (v0.6)
 
 Programmable shaders allow uploading custom **PSB bytecode** (compiled from PGLSL by
 `PglShaderCompiler`) to be executed per-pixel on the GPU.
@@ -891,7 +1262,7 @@ encoder->BindShaderProgram(0, 0, 1, 1.0f);
 encoder->SetShaderUniform(1, 3, myValue);  // slot 3 = first user uniform
 ```
 
-### 6.10 Mesh Resources
+### 7.10 Mesh Resources
 
 ```cpp
 void CreateMesh(PglMesh meshId,
@@ -920,7 +1291,7 @@ void UpdateVerticesDelta(PglMesh meshId,
 | `UpdateVertices` | Replace the entire vertex buffer. Vertex count must match the original. |
 | `UpdateVerticesDelta` | Sparse update — only the listed vertices are patched; bandwidth-efficient for morphs/blend shapes. |
 
-### 6.11 Material Resources
+### 7.11 Material Resources
 
 ```cpp
 void CreateMaterial(PglMaterial materialId,
@@ -942,7 +1313,7 @@ void DestroyMaterial(PglMaterial materialId);
 | `UpdateMaterial` | Update the parameters of an existing material without re-creating it. |
 | `DestroyMaterial` | Free GPU-side material resources. |
 
-### 6.12 Texture Resources
+### 7.12 Texture Resources
 
 ```cpp
 void CreateTexture(PglTexture textureId,
@@ -973,7 +1344,7 @@ void DestroyTexture(PglTexture textureId);
 | `PGL_TEX_RGBA8888` | 4 |
 | `PGL_TEX_GRAYSCALE8` | 1 |
 
-### 6.12.1 Image Sequence Resources
+### 7.12.1 Image Sequence Resources
 
 An `ImageSequence` stores multiple frames in a single atlas for GPU-side animated textures. The GPU auto-advances the active frame based on `frameTimeUs` and the sequence's FPS. Both 3D materials (`PGL_MAT_IMAGE_SEQUENCE`) and 2D sprites (`PGL_SPRITE_SRC_SEQUENCE`) can reference an image sequence.
 
@@ -1006,7 +1377,7 @@ void DestroyImageSequence(PglImageSequence sequenceId);
 
 **Limits:** `PGL_MAX_IMAGE_SEQUENCES` = 32.
 
-### 6.12.2 Font Resources
+### 7.12.2 Font Resources
 
 Custom font atlases enable high-quality text rendering beyond the two built-in bitmap fonts. Once uploaded, fonts are shared resources usable by both 2D `CMD_DRAW_TEXT` and any future 3D text support.
 
@@ -1032,7 +1403,7 @@ void DestroyFont(PglFont fontId);
 
 **Limits:** `PGL_MAX_FONTS` = 16 (plus 2 built-in fonts at indices 0 and 1).
 
-### 6.13 Pixel Layout
+### 7.13 Pixel Layout
 
 Pixel layouts describe the physical mapping from logical pixel indices to 2-D screen
 coordinates. Required for non-standard LED panels.
@@ -1062,7 +1433,7 @@ void SetPixelLayoutRect(PglLayout layoutId,
 | `layoutId` | `PglLayout` | Layout index (0–3) |
 | `reversed` | `bool` | If `true`, pixel order is reversed |
 
-### 6.14 GPU Memory Access
+### 7.14 GPU Memory Access
 
 Low-level memory commands for direct GPU memory manipulation.
 
@@ -1098,7 +1469,7 @@ void MemCopy(PglMemTier srcTier, uint32_t srcAddress,
 | `FramebufferCapture` | Capture the current framebuffer contents for SPI readback (via SMW bulk staging). Use `bufferSelect` for double-buffered configs. |
 | `MemCopy` | Copy data between tiers on the GPU side without host involvement. Useful for SRAM ↔ PSRAM migration. |
 
-### 6.15 2D Layer & Drawing Commands *(v0.7)*
+### 7.15 2D Layer & Drawing Commands *(v0.7)*
 
 Layer management and 2D drawing extensions for the compositing pipeline.
 
@@ -1157,7 +1528,7 @@ void SetViewport(uint8_t renderTargetId, uint16_t x, uint16_t y, uint16_t w, uin
 
 > See [2D_Graphics_And_Compositing.md](../../../docs/2D_Graphics_And_Compositing.md) for full wire-format structures.
 
-### 6.16 Per-Layer Shader Binding *(v0.7)*
+### 7.16 Per-Layer Shader Binding *(v0.7)*
 
 ```cpp
 void SetLayerShader(uint8_t layerId, uint16_t shaderId,
@@ -1174,7 +1545,7 @@ void SetLayerShader(uint8_t layerId, uint16_t shaderId,
 Emits `PGL_OP_SET_LAYER_SHADER` (0xB0). The shader runs per-pixel on the layer's
 framebuffer **after** all 2D draw commands complete and **before** compositing.
 
-### 6.17 Shared Memory Window (Bidirectional Access) *(v0.7)*
+### 7.17 Shared Memory Window (Bidirectional Access) *(v0.7)*
 
 ```cpp
 void SmwWriteMailbox(uint8_t slot, uint32_t value);
@@ -1192,7 +1563,7 @@ uint32_t SmwGetSequence();
 | `SmwReadBulk` | — | Read the bulk staging buffer contents (SPI RX half-duplex read, no opcode) |
 | `SmwGetSequence` | — | Read the SMW sequence counter for change detection |
 
-### 6.18 Resource Persistence & Direct Framebuffer Write *(v0.7.1)*
+### 7.18 Resource Persistence & Direct Framebuffer Write *(v0.7.1)*
 
 Commands for persisting GPU resources across power cycles and writing raw pixel
 data directly to the output framebuffer.
@@ -1260,12 +1631,12 @@ See [Memory_Management_API.md §9.5](../../../docs/Memory_Management_API.md) for
 
 ---
 
-## 7. PglDevice.h — Host Device Driver
+## 8. PglDevice.h — Host Device Driver
 
 `PglDevice` manages the bidirectional Octal SPI transport and optional I2C fallback bus.
 It owns a double-buffered command buffer and handles asynchronous DMA submission.
 
-### 7.1 PglDeviceConfig
+### 8.1 PglDeviceConfig
 
 ```cpp
 struct PglDeviceConfig {
@@ -1295,7 +1666,7 @@ struct PglDeviceConfig {
   completions, error events). This single IRQ line is shared across both the
   Octal SPI and I2C protocols. If omitted, the host must poll for status changes.
 
-### 7.2 PglDevice Lifecycle
+### 8.2 PglDevice Lifecycle
 
 ```cpp
 bool Initialize(const PglDeviceConfig& config);
@@ -1311,7 +1682,7 @@ PglEncoder* GetEncoder();
 | `IsInitialized` | Returns `true` after a successful `Initialize()` call. |
 | `GetEncoder` | Returns a pointer to the `PglEncoder` targeting the current active buffer. Only valid between `BeginFrame()` and `EndFrame()`. |
 
-### 7.3 Frame Lifecycle
+### 8.3 Frame Lifecycle
 
 ```cpp
 void BeginFrame(uint32_t frameNumber, uint32_t frameTimeUs);
@@ -1326,7 +1697,7 @@ void EndFrame();
 **Double-buffering:** While frame N is being transmitted over DMA, the host can
 immediately begin recording frame N+1 into the alternate buffer.
 
-### 7.4 Configuration
+### 8.4 Configuration
 
 Configuration methods write to GPU registers via **Octal SPI commands** (preferred)
 or I2C (fallback). Query methods use SPI read transactions (0xE0–0xEA) for high-speed
@@ -1351,7 +1722,7 @@ GPU→Host data.
 | `QueryExtendedStatus()` | `PglExtendedStatusResponse` | 32-byte detailed status (CPU %, temp, VRAM usage, timing) |
 | `HasExternalVram()` | `bool` | Shorthand: queries capabilities and checks `PGL_CAP_EXTERNAL_VRAM` (RP2350B only) |
 
-### 7.5 Frame Statistics
+### 8.5 Frame Statistics
 
 | Method | Returns | Description |
 |---|---|---|
@@ -1363,7 +1734,7 @@ GPU→Host data.
 
 ---
 
-## 8. PglParser.h — Command Buffer Parser
+## 9. PglParser.h — Command Buffer Parser
 
 GPU-side alignment-safe utilities for reading the binary command stream. All functions
 advance the pointer reference unless otherwise noted.
@@ -1402,13 +1773,13 @@ inline bool PglValidateFrameCRC(const uint8_t* frameStart, uint32_t totalLength)
 
 ---
 
-## 9. PglShaderBackend.h — Shader Math Backend
+## 10. PglShaderBackend.h — Shader Math Backend
 
 Platform-portable math primitives used by the GPU's shader VM. All functions are
 `static inline` inside the `PglShaderBackend` namespace. The active implementation is
 selected at compile time.
 
-### 9.1 Compile-Time Defines
+### 10.1 Compile-Time Defines
 
 | Define | Description |
 |---|---|
@@ -1420,7 +1791,7 @@ selected at compile time.
 Define exactly one before including `PglShaderBackend.h`. On the RP2350 GPU the build
 system sets `PGL_BACKEND_CM33_FPV5`.
 
-### 9.2 Arithmetic
+### 10.2 Arithmetic
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1431,7 +1802,7 @@ system sets `PGL_BACKEND_CM33_FPV5`.
 | `Div` | `float Div(float a, float b)` | $a / b$ (returns 0 if $b = 0$) |
 | `Fma` | `float Fma(float a, float b, float c)` | $a \times b + c$ (fused multiply-add on CM33) |
 
-### 9.3 Math Functions
+### 10.3 Math Functions
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1448,7 +1819,7 @@ system sets `PGL_BACKEND_CM33_FPV5`.
 | `Sqrt` | `float Sqrt(float a)` | $\sqrt{a}$ (VSQRT instruction on CM33) |
 | `Rsqrt` | `float Rsqrt(float a)` | $1/\sqrt{a}$ (fast inverse sqrt on soft-float) |
 
-### 9.4 Rounding & Value Manipulation
+### 10.4 Rounding & Value Manipulation
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1459,7 +1830,7 @@ system sets `PGL_BACKEND_CM33_FPV5`.
 | `Fract` | `float Fract(float x)` | $x - \lfloor x \rfloor$ |
 | `Mod` | `float Mod(float x, float y)` | $x \bmod y$ (returns 0 if $y = 0$) |
 
-### 9.5 Clamping & Interpolation
+### 10.5 Clamping & Interpolation
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1470,7 +1841,7 @@ system sets `PGL_BACKEND_CM33_FPV5`.
 | `Step` | `float Step(float edge, float x)` | 0 if $x < edge$, else 1 |
 | `Smoothstep` | `float Smoothstep(float edge0, float edge1, float x)` | Hermite interpolation: $3t^2 - 2t^3$ where $t = \text{clamp}((x-e_0)/(e_1-e_0))$ |
 
-### 9.6 Geometric (2-D / 3-D)
+### 10.6 Geometric (2-D / 3-D)
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1483,7 +1854,7 @@ system sets `PGL_BACKEND_CM33_FPV5`.
 | `Cross` | `void Cross(ax, ay, az, bx, by, bz, &outX, &outY, &outZ)` | 3-D cross product |
 | `Dist2` | `float Dist2(float ax, float ay, float bx, float by)` | 2-D Euclidean distance |
 
-### 9.7 Texture Sampling & Pixel Packing
+### 10.7 Texture Sampling & Pixel Packing
 
 | Function | Signature | Description |
 |---|---|---|
@@ -1507,12 +1878,12 @@ system sets `PGL_BACKEND_CM33_FPV5`.
 
 ---
 
-## 10. PglShaderBytecode.h — PSB Format
+## 11. PglShaderBytecode.h — PSB Format
 
 **PGL Shader Bytecode (PSB)** is the binary format for compiled programmable shaders.
 It is shared between the host (compiler output) and the GPU (shader VM input).
 
-### 10.1 Constants
+### 11.1 Constants
 
 | Name | Value | Description |
 |---|---|---|
@@ -1525,7 +1896,7 @@ It is shared between the host (compiler output) and the GPU (shader VM input).
 | `PSB_MAX_PROGRAM_SIZE` | `1296` | Max binary size in bytes |
 | `PSB_FLAG_NEEDS_SCRATCH_COPY` | `0x01` | Shader reads from the framebuffer (requires scratch copy) |
 
-### 10.2 Operand Encoding
+### 11.2 Operand Encoding
 
 Each instruction source/destination operand is an 8-bit value:
 
@@ -1537,7 +1908,7 @@ Each instruction source/destination operand is an 8-bit value:
 | `0x50–0x5F` | `PSB_OP_LITERAL_BASE..END` | Inline literal (see table) |
 | `0xFF` | `PSB_OP_UNUSED` | Unused / no operand |
 
-### 10.3 Inline Literal Table
+### 11.3 Inline Literal Table
 
 `PSB_LITERALS[]` — 16 common float constants encoded in a single byte:
 
@@ -1552,7 +1923,7 @@ Each instruction source/destination operand is an 8-bit value:
 | `0x56` | $\pi$ | | `0x5E` | $1/\sqrt{2}$ |
 | `0x57` | $2\pi$ | | `0x5F` | $\sqrt{2}$ |
 
-### 10.4 VM Opcodes
+### 11.4 VM Opcodes
 
 Each instruction is 4 bytes: `[opcode, dst, srcA, srcB]`.
 
@@ -1638,7 +2009,7 @@ Each instruction is 4 bytes: `[opcode, dst, srcA, srcB]`.
 | `0x60` | `LCONST` | `dst = constants[srcA]` |
 | `0x61` | `LUNI` | `dst = uniforms[srcA]` |
 
-### 10.5 Register Map
+### 11.5 Register Map
 
 | Register(s) | Name | Binding |
 |---|---|---|
@@ -1656,7 +2027,7 @@ Each instruction is 4 bytes: `[opcode, dst, srcA, srcB]`.
 | r30 | `PSB_REG_OUT_B` | Output blue |
 | r31 | `PSB_REG_OUT_A` | Output alpha |
 
-### 10.6 Auto-Bound Uniforms
+### 11.6 Auto-Bound Uniforms
 
 | Slot | Name | Binding |
 |---|---|---|
@@ -1665,7 +2036,7 @@ Each instruction is 4 bytes: `[opcode, dst, srcA, srcB]`.
 | 2 | `PSB_AUTO_UNIFORM_TIME` | `u_time` (elapsed seconds, float) |
 | 3+ | `PSB_USER_UNIFORM_START` | First user-assignable slot |
 
-### 10.7 Structs & Enums
+### 11.7 Structs & Enums
 
 #### `PglShaderProgramHeader` (16 bytes, packed)
 
@@ -1707,7 +2078,7 @@ Each instruction is 4 bytes: `[opcode, dst, srcA, srcB]`.
 | 2 | `PSB_UNIFORM_VEC3` |
 | 3 | `PSB_UNIFORM_VEC4` |
 
-### 10.8 Standalone Functions
+### 11.8 Standalone Functions
 
 ```cpp
 static inline uint32_t PsbFnv1a(const char* str);
@@ -1724,13 +2095,13 @@ static inline float PsbResolveOperand(uint8_t op,
 
 ---
 
-## 11. PglShaderCompiler.h — PGLSL Compiler
+## 12. PglShaderCompiler.h — PGLSL Compiler
 
 The PGLSL compiler transforms a GLSL-like source language into PSB bytecode.
 It runs entirely on the **ESP32-S3 host** and produces a binary blob suitable for
 `PglEncoder::CreateShaderProgram()`.
 
-### 11.1 CompileResult
+### 12.1 CompileResult
 
 ```cpp
 struct CompileResult {
@@ -1750,7 +2121,7 @@ struct CompileResult {
 | `errorMsg` | Human-readable error message (only on failure). |
 | `errorLine` | Source line number of the error (1-based). |
 
-### 11.2 Public API
+### 12.2 Public API
 
 ```cpp
 static CompileResult Compile(const char* source, size_t sourceLength);
@@ -1795,7 +2166,7 @@ void main() {
 - Max 256 instructions, 32 constants, 16 uniforms, 48 variables
 - Max 2048 tokens, 512 AST nodes
 
-### 11.3 Compiler Internals (private)
+### 12.3 Compiler Internals (private)
 
 The compiler pipeline runs in six phases:
 
@@ -1827,7 +2198,7 @@ The compiler pipeline runs in six phases:
 
 ---
 
-## 12. PglJobScheduler.h — Job Scheduler Interface
+## 13. PglJobScheduler.h — Job Scheduler Interface
 
 Abstract interface for platform-portable parallel job dispatch on the GPU.
 
@@ -1865,7 +2236,7 @@ public:
 
 ---
 
-## 13. PglJobScheduler_SingleCore.h — Serial Fallback
+## 14. PglJobScheduler_SingleCore.h — Serial Fallback
 
 Serial fallback scheduler — executes all jobs immediately on the calling core.
 Used on single-core platforms or as a baseline for testing.
@@ -1889,7 +2260,7 @@ public:
 
 ---
 
-## 14. Quick Cross-Reference
+## 15. Quick Cross-Reference
 
 ### By Task
 
