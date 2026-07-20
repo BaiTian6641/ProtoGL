@@ -5,13 +5,21 @@
  * These structs are designed for direct serialization (little-endian, packed).
  * They are shared between the ESP32-S3 host encoder and the RP2350 GPU decoder.
  *
- * ProtoGL API Specification v0.7.3 — M12 implementation audit alignment
+ * ProtoGL API Specification v0.8.0 — protocol v8: capability flags16,
+ * generation-checked handles, parser error bitmask (append-only, see below)
  */
 
 #pragma once
 
 #include <cstdint>
 #include <cstring>
+
+// ─── Protocol Version ───────────────────────────────────────────────────────
+// Incremented on any wire-visible change. GPUs report it in
+// PglCapabilityResponse.protoVersion; hosts MUST check it before reading
+// beyond the v7 layouts. v8 rule: structs only ever GROW by appending —
+// v7-sized reads on a v8 GPU always return valid v7 data.
+static constexpr uint8_t PGL_PROTOCOL_VERSION = 8;
 
 // ─── Resource Handles ───────────────────────────────────────────────────────
 
@@ -28,6 +36,27 @@ static constexpr PglMesh     PGL_INVALID_MESH     = 0xFFFF;
 static constexpr PglMaterial PGL_INVALID_MATERIAL  = 0xFFFF;
 static constexpr PglTexture  PGL_INVALID_TEXTURE   = 0xFFFF;
 static constexpr PglCamera   PGL_INVALID_CAMERA    = 0xFF;
+
+// ─── v8 generation-checked handles ───────────────────────────────────────────
+// A u16 resource handle (mesh/material/texture) encodes [ generation:8 |
+// index:8 ]. The host composes handles at create time; the GPU records the
+// generation and rejects use-after-realloc (ABA) with a generation mismatch
+// (counted as a parser error, fail-closed). Legacy hosts that pass plain
+// indices simply use generation 0 — fully accepted (v7 semantics).
+// Index 0xFF is RESERVED as the invalid index (matches the PGL_INVALID_*
+// sentinels, which decode as gen=0xFF/idx=0xFF): mesh/material slots usable
+// for gen-aware handles are 0–254; texture slots 0–63 as before.
+static constexpr uint8_t PGL_INVALID_HANDLE_INDEX = 0xFF;
+
+static constexpr uint16_t PglMakeHandle(uint8_t generation, uint8_t index) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(generation) << 8) | index);
+}
+static constexpr uint8_t PglHandleIndex(uint16_t handle) {
+    return static_cast<uint8_t>(handle & 0xFF);
+}
+static constexpr uint8_t PglHandleGeneration(uint16_t handle) {
+    return static_cast<uint8_t>(handle >> 8);
+}
 static constexpr PglLayout   PGL_INVALID_LAYOUT    = 0xFF;
 static constexpr PglDisplay  PGL_INVALID_DISPLAY   = 0xFF;
 static constexpr PglPool     PGL_INVALID_POOL      = 0xFFFF;
@@ -398,13 +427,9 @@ struct PglCmdSetShaderUniformHeader {
     // Followed by: componentCount × float (4–16 bytes)
 };
 
-// Capability flag for shader VM support
-// NOTE: This is defined as bit 8 (0x100), which exceeds the capacity of the
-// current `PglCapabilityResponse.flags` uint8_t field.  All 8 bits of that
-// field are already allocated (0x01–0x80).  A future protocol version should
-// widen `flags` to uint16_t (requiring a struct layout change and version bump)
-// to accommodate this and additional capability bits.
-static constexpr uint32_t PGL_CAP_SHADER_VM = (1u << 8);
+// Capability bit for shader VM support: PGL_CAP_SHADER_VM (1u<<8) now lives
+// with the other logical capability bits at PglCapabilityResponse (above) and
+// is carried in flags16 since protocol v8.
 
 // Maximum number of loaded shader programs on the GPU
 static constexpr uint8_t PGL_MAX_SHADER_PROGRAMS = 16;
@@ -907,8 +932,26 @@ struct PglExtendedStatusResponse {
     uint8_t  vramTierFlags;     // bit0: OPI detected, bit1: QSPI detected,
                                 // bit2: OPI initialised, bit3: QSPI initialised
     uint8_t  qspiChipType;      // PglQspiChipType — detected chip on CS1
+
+    // ── v8 extension (bytes 32–39); valid only when protoVersion >= 8 ──
+    uint32_t lastCompletedFrame; // Highest frame number fully rendered + presented
+    uint16_t parserErrorCount;   // Cumulative parser/command errors since boot
+    uint16_t parserErrorMask;    // Latched PglParserErrorFlags bitmask
 };
-static_assert(sizeof(PglExtendedStatusResponse) == 32, "PglExtendedStatusResponse must be 32 bytes");
+static_assert(sizeof(PglExtendedStatusResponse) == 40, "PglExtendedStatusResponse must be 40 bytes");
+
+/// Parser/command error classes, latched in
+/// PglExtendedStatusResponse::parserErrorMask (protocol v8). Fail-closed:
+/// offending commands/frames are skipped, never partially executed.
+enum PglParserErrorFlags : uint16_t {
+    PGL_PERR_UNKNOWN_OPCODE  = 0x0001,  // Opcode with no handler (skipped + counted)
+    PGL_PERR_BAD_LENGTH      = 0x0002,  // payloadLength runs past frame / truncated
+    PGL_PERR_CRC             = 0x0004,  // Frame CRC-16 mismatch (frame dropped)
+    PGL_PERR_INVALID_HANDLE  = 0x0008,  // Resource handle out of range / never created
+    PGL_PERR_GEN_MISMATCH    = 0x0010,  // Handle generation mismatch (v8 ABA guard)
+    PGL_PERR_POOL_EXHAUSTED  = 0x0020,  // Scene pool full on create
+    PGL_PERR_INVALID_VALUE   = 0x0040,  // Field value out of range
+};
 
 /// GPU VRAM tier presence flags (PglExtendedStatusResponse::vramTierFlags)
 enum PglVramTierFlags : uint8_t {
@@ -933,8 +976,11 @@ enum PglClockFlags : uint8_t {
 
 /// Returned by PGL_REG_CAPABILITY_QUERY (0x09). Allows the host to discover
 /// what GPU core is on the other end of the wire.
+/// v8: append-only — v7 hosts read 16 bytes and get the exact v7 layout;
+/// v8 hosts check protoVersion ≥ 8 before reading the extension.
 struct PglCapabilityResponse {
-    uint8_t  protoVersion;   // ProtoGL protocol version (currently 7 = v0.7)
+    // ── v7 layout (bytes 0–15), frozen ──
+    uint8_t  protoVersion;   // ProtoGL protocol version (8 = v0.8, PGL_PROTOCOL_VERSION)
     uint8_t  gpuArch;        // PglGpuArch enum value
     uint8_t  coreCount;      // Number of render cores (e.g., 2 for RP2350)
     uint8_t  coreFreqMHz;    // Core clock in MHz (e.g., 150)
@@ -944,10 +990,12 @@ struct PglCapabilityResponse {
     uint16_t maxMeshes;      // Max mesh slots
     uint16_t maxMaterials;   // Max material slots
     uint8_t  maxTextures;    // Max texture slots
-    uint8_t  flags;          // bit0: hasHWFloat, bit1: hasUnalignedAccess,
-                             // bit2: hasDSP, bit3: hasSIMD
+    uint8_t  flags;          // capability bits 0–7 (PglCapabilityFlags)
+    // ── v8 extension (bytes 16–19); valid only when protoVersion >= 8 ──
+    uint16_t flags16;        // capability bits 8–23 = (PglCapBits >> 8)
+    uint16_t reserved0;      // 0 — reserved for future growth
 };
-static_assert(sizeof(PglCapabilityResponse) == 16, "PglCapabilityResponse must be 16 bytes");
+static_assert(sizeof(PglCapabilityResponse) == 20, "PglCapabilityResponse must be 20 bytes");
 
 enum PglCapabilityFlags : uint8_t {
     PGL_CAP_HW_FLOAT         = 0x01,  // Hardware FPU present
@@ -959,6 +1007,30 @@ enum PglCapabilityFlags : uint8_t {
     PGL_CAP_DYNAMIC_CLOCK    = 0x40,  // Supports runtime clock adjustment
     PGL_CAP_TEMP_SENSOR      = 0x80,  // On-chip temperature sensor available
 };
+
+// ─── Logical capability bits 8–23 (carried in PglCapabilityResponse::flags16) ─
+// Defined in one u32 space; bits 0–7 mirror the v7 `flags` byte above.
+// Bits 11+ are PLANNED features (V9/V10/M13 tracks) — reported 0 until the
+// feature ships, so host code can be written against them today.
+static constexpr uint32_t PGL_CAP_SHADER_VM       = (1u << 8);  // PSB1 pixel shader VM (was stranded: never fit the u8 flags)
+static constexpr uint32_t PGL_CAP_HANDLE_GEN      = (1u << 9);  // v8: generation-checked resource handles
+static constexpr uint32_t PGL_CAP_ERROR_BITMASK   = (1u << 10); // v8: parser error bitmask + lastCompletedFrame in extended status
+static constexpr uint32_t PGL_CAP_VS_PSB          = (1u << 11); // V10 (planned): vertex-stage PSB programs
+static constexpr uint32_t PGL_CAP_FS_PSB          = (1u << 12); // V10 (planned): fragment-stage PSB programs
+static constexpr uint32_t PGL_CAP_NEAR_CLIP       = (1u << 13); // V9  (planned): near-plane triangle clipping
+static constexpr uint32_t PGL_CAP_MULTI_CAMERA    = (1u << 14); // V9  (planned): multiple active cameras + per-camera target
+static constexpr uint32_t PGL_CAP_ALPHA_BLEND_3D  = (1u << 15); // V9  (planned): alpha blending in the 3D path
+static constexpr uint32_t PGL_CAP_BILINEAR        = (1u << 16); // V9  (planned): bilinear texture filtering
+static constexpr uint32_t PGL_CAP_RENDER_TO_LAYER = (1u << 17); // V9  (planned): 3D render targets any layer
+static constexpr uint32_t PGL_CAP_M13_2D          = (1u << 18); // M13 (planned): full 2D op family (clip/gradient/sprite/text...)
+
+/// Test a logical capability bit against a response (v7-safe: bits 8+ read 0
+/// when protoVersion < 8).
+static inline bool PglCapSupports(const PglCapabilityResponse& cap, uint32_t logicalBit) {
+    const uint32_t all = static_cast<uint32_t>(cap.flags) |
+        ((cap.protoVersion >= 8 ? static_cast<uint32_t>(cap.flags16) : 0u) << 8);
+    return (all & logicalBit) != 0;
+}
 
 // ─── GPU Memory I2C Response Structs ────────────────────────────────────────
 

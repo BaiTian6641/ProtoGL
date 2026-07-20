@@ -262,18 +262,29 @@ public:
 
     /**
      * @brief Query GPU capabilities (architecture, core count, memory, limits).
+     *
+     * Protocol v8: reads the 16-byte v7 layout first; if the GPU reports
+     * protoVersion >= 8, re-reads the full 20-byte response (flags16).
+     * The negotiated version is cached for the other status queries.
      */
     PglCapabilityResponse QueryCapability() {
         PglCapabilityResponse cap{};
         uint8_t reg = PGL_REG_CAPABILITY_QUERY;
         WriteI2C(&reg, 1);
-        ReadI2C(&cap, sizeof(cap));
+        ReadI2C(&cap, 16);  // v7 layout is always valid
+        if (cap.protoVersion >= 8) {
+            WriteI2C(&reg, 1);  // re-select register, read the full v8 response
+            ReadI2C(&cap, sizeof(cap));
+        }
+        protoVersion_ = cap.protoVersion;
         return cap;
     }
 
     /**
-     * @brief Query 32-byte extended status: GPU usage, temperature, VRAM,
+     * @brief Query extended status: GPU usage, temperature, VRAM,
      *        frame timing, clock frequency, and VRAM tier detection flags.
+     *        Protocol v8 GPUs additionally return lastCompletedFrame and the
+     *        parser error count/mask (bytes 32–39; zero on v7 GPUs).
      *
      * Requires GPU firmware with PGL_REG_EXTENDED_STATUS support.
      * Call at most once per frame to avoid I2C bus congestion.
@@ -282,7 +293,11 @@ public:
         PglExtendedStatusResponse ext{};
         uint8_t reg = PGL_REG_EXTENDED_STATUS;
         WriteI2C(&reg, 1);
-        ReadI2C(&ext, sizeof(ext));
+        ReadI2C(&ext, 32);  // v7 layout is always valid
+        if (protoVersion_ >= 8) {
+            WriteI2C(&reg, 1);  // re-select register, read the full v8 response
+            ReadI2C(&ext, sizeof(ext));
+        }
         return ext;
     }
 
@@ -598,6 +613,7 @@ private:
     int         activeBuffer_   = 0;
     PglEncoder* encoder_        = nullptr;
     bool        initialized_    = false;
+    uint8_t     protoVersion_   = 0;   ///< GPU protocol version (0 = unknown, assume v7-size reads)
     uint32_t    droppedFrames_  = 0;
     uint32_t    overflowFrames_ = 0;
     uint32_t    gpuStalls_      = 0;       ///< Count of consecutive-drop threshold events

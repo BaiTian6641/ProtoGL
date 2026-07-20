@@ -555,6 +555,72 @@ public:
         WriteCommand(PGL_CMD_DESTROY_TEXTURE, &payload, sizeof(payload));
     }
 
+    // ─── v8 Generation-Checked Resources ─────────────────────────────────
+    // Opt-in wrappers composing [generation|index] handles (v8 semantics,
+    // see PglTypes.h) with per-index generation tracking. The GPU rejects
+    // stale handles after re-creation (gen mismatch → parser error).
+    // Legacy plain-index calls (generation 0) remain fully valid.
+    // Usable index range: 0–254 (0xFF is the reserved invalid index).
+    // Generation tables live host-side (576 B) and wrap at 256 — the ABA
+    // guard holds as long as a stale handle isn't exactly 256 re-creations
+    // behind. After a GPU reboot/re-sync call ResetGenerations(): GPU-side
+    // generations restart at 0 too.
+
+    PglMesh CreateMeshGen(uint8_t index,
+                          const PglVec3* vertices, uint16_t vertexCount,
+                          const PglIndex3* indices, uint16_t triangleCount,
+                          bool hasUV = false,
+                          const PglVec2* uvVertices = nullptr, uint16_t uvVertexCount = 0,
+                          const PglIndex3* uvIndices = nullptr) {
+        if (index == PGL_INVALID_HANDLE_INDEX) return PGL_INVALID_MESH;
+        const PglMesh h = PglMakeHandle(meshGen_[index], index);
+        CreateMesh(h, vertices, vertexCount, indices, triangleCount,
+                   hasUV, uvVertices, uvVertexCount, uvIndices);
+        return h;
+    }
+
+    void DestroyMeshGen(PglMesh handle) {
+        DestroyMesh(handle);
+        meshGen_[PglHandleIndex(handle)]++;
+    }
+
+    PglMaterial CreateMaterialGen(uint8_t index, PglMaterialType type,
+                                  PglBlendMode blendMode,
+                                  const void* params, uint16_t paramSize) {
+        if (index == PGL_INVALID_HANDLE_INDEX) return PGL_INVALID_MATERIAL;
+        const PglMaterial h = PglMakeHandle(materialGen_[index], index);
+        CreateMaterial(h, type, blendMode, params, paramSize);
+        return h;
+    }
+
+    void DestroyMaterialGen(PglMaterial handle) {
+        DestroyMaterial(handle);
+        materialGen_[PglHandleIndex(handle)]++;
+    }
+
+    PglTexture CreateTextureGen(uint8_t index,
+                                uint16_t width, uint16_t height,
+                                PglTextureFormat format,
+                                const void* pixelData) {
+        if (index >= 64) return PGL_INVALID_TEXTURE;  // 64 texture slots (0xFF reserved anyway)
+        const PglTexture h = PglMakeHandle(textureGen_[index], index);
+        CreateTexture(h, width, height, format, pixelData);
+        return h;
+    }
+
+    void DestroyTextureGen(PglTexture handle) {
+        DestroyTexture(handle);
+        const uint8_t index = PglHandleIndex(handle);
+        if (index < 64) textureGen_[index]++;
+    }
+
+    /// Reset all local generation tables (GPU reboot / re-sync).
+    void ResetGenerations() {
+        std::memset(meshGen_, 0, sizeof(meshGen_));
+        std::memset(materialGen_, 0, sizeof(materialGen_));
+        std::memset(textureGen_, 0, sizeof(textureGen_));
+    }
+
     // ─── Pixel Layout ───────────────────────────────────────────────────
 
     void SetPixelLayoutIrregular(PglLayout layoutId, const PglVec2* coords,
@@ -1148,4 +1214,9 @@ private:
     uint16_t commandCount_   = 0;
     uint32_t currentFrameNumber_ = 0;
     bool     overflow_       = false;
+
+    // v8 handle generation tables (opt-in *Gen API; 576 B per encoder)
+    uint8_t  meshGen_[256]     = {};
+    uint8_t  materialGen_[256] = {};
+    uint8_t  textureGen_[64]   = {};
 };

@@ -94,6 +94,50 @@ void protogl_api_smoke() {
     enc.SetShaderUniform(0, 4, 1.0f, 0.5f, 0.25f, 0.0f);
     enc.DestroyShaderProgram(0);
 
+    // ─── Protocol v8: capability bits, gen-checked handles, error flags ───
+    static_assert(PGL_PROTOCOL_VERSION == 8, "protocol v8");
+    static_assert(sizeof(PglCapabilityResponse) == 20, "v8 capability response is 20 bytes");
+    static_assert(sizeof(PglExtendedStatusResponse) == 40, "v8 extended status is 40 bytes");
+    static_assert(PglMakeHandle(0xAB, 0x12) == 0xAB12, "handle compose is gen|index");
+    static_assert(PglHandleIndex(0xAB12) == 0x12, "handle index extraction");
+    static_assert(PglHandleGeneration(0xAB12) == 0xAB, "handle generation extraction");
+    static_assert(PglHandleIndex(PGL_INVALID_MESH) == PGL_INVALID_HANDLE_INDEX,
+                  "invalid sentinel decodes to the reserved invalid index");
+
+    PglCapabilityResponse capv8{};
+    capv8.protoVersion = 8;
+    capv8.flags   = PGL_CAP_HW_FLOAT;
+    capv8.flags16 = static_cast<uint16_t>(
+        (PGL_CAP_SHADER_VM | PGL_CAP_HANDLE_GEN | PGL_CAP_ERROR_BITMASK) >> 8);
+    (void)PglCapSupports(capv8, PGL_CAP_HW_FLOAT);      // v7 bit via flags
+    (void)PglCapSupports(capv8, PGL_CAP_SHADER_VM);     // v8 bit via flags16
+    (void)!PglCapSupports(capv8, PGL_CAP_VS_PSB);       // planned bit reads 0
+    capv8.protoVersion = 7;
+    (void)!PglCapSupports(capv8, PGL_CAP_SHADER_VM);    // v7-safe: bits 8+ invisible
+
+    // Gen-aware resource API (composes gen|index handles, tracks generations)
+    PglMesh gm = enc.CreateMeshGen(3, vertices, 3, indices, 1);
+    (void)(PglHandleIndex(gm) == 3 && PglHandleGeneration(gm) == 0);
+    enc.UpdateVertices(gm, vertices, 3);
+    enc.DestroyMeshGen(gm);
+    gm = enc.CreateMeshGen(3, vertices, 3, indices, 1);  // re-create bumps gen
+    (void)(PglHandleGeneration(gm) == 1);
+    enc.DestroyMeshGen(gm);
+    PglMaterial gmat = enc.CreateMaterialGen(2, PGL_MAT_SIMPLE, PGL_BLEND_BASE,
+                                             nullptr, 0);
+    (void)(PglHandleIndex(gmat) == 2);
+    enc.DestroyMaterialGen(gmat);
+    PglTexture gtex = enc.CreateTextureGen(7, 2, 2, PGL_TEX_RGB565, texels);
+    (void)(PglHandleIndex(gtex) == 7);
+    (void)(enc.CreateTextureGen(200, 2, 2, PGL_TEX_RGB565, texels) == PGL_INVALID_TEXTURE);
+    enc.DestroyTextureGen(gtex);
+    enc.ResetGenerations();
+
+    // Parser error flags exist for the firmware's status reporting
+    (void)(PGL_PERR_UNKNOWN_OPCODE | PGL_PERR_BAD_LENGTH | PGL_PERR_CRC |
+           PGL_PERR_INVALID_HANDLE | PGL_PERR_GEN_MISMATCH |
+           PGL_PERR_POOL_EXHAUSTED | PGL_PERR_INVALID_VALUE);
+
     enc.EndFrame();
     (void)enc.HasOverflow();
     (void)enc.GetLength();

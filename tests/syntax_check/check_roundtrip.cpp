@@ -176,6 +176,88 @@ int main() {
     check(!PglValidateFrameCRC(tampered, hdr.totalLength),
           "crc: tampered frame rejected");
 
+    // ─── Protocol v8: generation-checked handles on the wire ─────────────────
+
+    {
+        uint8_t buf2[512];
+        PglEncoder enc2(buf2, sizeof(buf2));
+        enc2.BeginFrame(1, 0);
+        const PglMesh gm = enc2.CreateMeshGen(5, nullptr, 0, nullptr, 0);  // gen 0 | idx 5
+        enc2.DrawObject(gm, PglMakeHandle(0x03, 7), VEC3_ZERO, QUAT_IDENTITY, VEC3_ONE,
+                        QUAT_IDENTITY, QUAT_IDENTITY, VEC3_ZERO, VEC3_ZERO, true);
+        enc2.DestroyMeshGen(gm);
+        const PglMesh gm2 = enc2.CreateMeshGen(5, nullptr, 0, nullptr, 0); // gen 1 | idx 5
+        enc2.DestroyMeshGen(gm2);
+        enc2.EndFrame();
+        check(!enc2.HasOverflow(), "v8: no overflow in gen-handle frame");
+        check(gm  == 0x0005 && gm2 == 0x0105,
+              "v8: composed handles gen0|5 then gen1|5 after destroy");
+
+        // Walk the commands and verify the raw handle bytes on the wire.
+        const uint8_t* f = enc2.GetBuffer();
+        PglFrameHeader h2{};
+        PglPeekStruct(f, h2);
+        const uint8_t* p2 = f + sizeof(PglFrameHeader);
+        const uint8_t* const end2 = f + h2.totalLength - sizeof(PglFrameFooter);
+
+        bool wire = true;
+        // cmd0 BEGIN_FRAME
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            wire &= (c.opcode == PGL_CMD_BEGIN_FRAME);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            PglSkip(p2, c.payloadLength);
+        }
+        // cmd1 CREATE_MESH: header.meshId == 0x0005
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            PglCmdCreateMeshHeader m{}; PglPeekStruct(p2, m);
+            wire &= (c.opcode == PGL_CMD_CREATE_MESH && m.meshId == 0x0005);
+            PglSkip(p2, c.payloadLength);
+        }
+        // cmd2 DRAW_OBJECT: meshId == 0x0005, materialId == 0x0307
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            PglCmdDrawObject d{}; PglPeekStruct(p2, d);
+            wire &= (c.opcode == PGL_CMD_DRAW_OBJECT &&
+                     d.meshId == 0x0005 && d.materialId == 0x0307);
+            PglSkip(p2, c.payloadLength);
+        }
+        // cmd3 DESTROY_MESH: 0x0005; cmd4 CREATE_MESH: 0x0105 (gen bumped)
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            PglCmdDestroyMesh d{}; PglPeekStruct(p2, d);
+            wire &= (c.opcode == PGL_CMD_DESTROY_MESH && d.meshId == 0x0005);
+            PglSkip(p2, c.payloadLength);
+        }
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            PglCmdCreateMeshHeader m{}; PglPeekStruct(p2, m);
+            wire &= (c.opcode == PGL_CMD_CREATE_MESH && m.meshId == 0x0105);
+            PglSkip(p2, c.payloadLength);
+        }
+        // cmd5 DESTROY_MESH: 0x0105; cmd6 END_FRAME, then exactly the CRC footer
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            PglCmdDestroyMesh d{}; PglPeekStruct(p2, d);
+            wire &= (c.opcode == PGL_CMD_DESTROY_MESH && d.meshId == 0x0105);
+            PglSkip(p2, c.payloadLength);
+        }
+        {
+            PglCommandHeader c{}; PglPeekStruct(p2, c);
+            PglSkip(p2, sizeof(PglCommandHeader));
+            wire &= (c.opcode == PGL_CMD_END_FRAME);
+            PglSkip(p2, c.payloadLength);
+        }
+        wire &= (p2 == end2);
+        check(wire, "v8: gen-encoded handles parse byte-exact through the frame");
+    }
+
     // ─── Summary ────────────────────────────────────────────────────────────
 
     std::printf("\n");
