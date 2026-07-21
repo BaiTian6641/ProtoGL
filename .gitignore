@@ -1,0 +1,28 @@
+# ProtoGL library .gitignore
+
+# PlatformIO / Arduino build outputs
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Generic build dirs
+build/
+build-*/
+
+# Object/library artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc

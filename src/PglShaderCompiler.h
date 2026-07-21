@@ -9,7 +9,8 @@
  *   1. Lexer     — tokenize PGLSL source
  *   2. Parser    — build flat expression list (no control flow)
  *   3. Type check — resolve types, validate built-ins
- *   4. Register allocate — linear scan over 20 user registers (r8–r27)
+ *   4. Register allocate — free-after-use temp stack (LIFO) over the
+ *      20 user registers (r8–r27); named locals stay persistent
  *   5. Code gen  — emit 4-byte PSB instructions
  *
  * Limitations matching the VM:
@@ -44,6 +45,11 @@ public:
         uint16_t bytecodeSize;
         char     errorMsg[128];
         uint16_t errorLine;
+        // Debug/diagnostic: peak value of the register allocator's bump
+        // pointer (one past the highest register ever handed out).
+        // Registers are 0-based, so regHighWater <= PSB_REG_USER_END + 1
+        // (28) means every temporary fit inside the user bank r8–r27.
+        uint8_t  regHighWater;
     };
 
     /**
@@ -173,8 +179,29 @@ private:
     PglShaderInstruction instrs_[MAX_INSTRS];
     int instrCount_ = 0;
 
-    // Register allocator state
+    // Register allocator state.
+    //
+    // nextReg_ is the bump pointer over the user bank r8–r27. Two allocation
+    // classes sit on top of it:
+    //   - PERSISTENT: named locals and user uniforms, allocated with plain
+    //     AllocRegs at parse time. They stay live until end of program and
+    //     are never freed. All persistent allocations happen before codegen,
+    //     so they occupy one contiguous block at the bottom of the user bank.
+    //   - TEMPORARY: expression intermediate results, allocated with
+    //     AllocTemp during codegen and tracked on tempStack_. Expression
+    //     evaluation consumes temporaries in strict LIFO (postfix) order, so
+    //     a consuming emitter can pop the temps its children pushed
+    //     (ReleaseTempsTo) and immediately reuse that register space.
+    struct TempReg {
+        uint8_t reg;   // first register of this temporary
+        uint8_t size;  // number of consecutive registers (1–4)
+    };
+    static constexpr int MAX_TEMP_REGS = PSB_REG_USER_END - PSB_REG_USER_START + 1;
+
     uint8_t nextReg_ = PSB_REG_USER_START;
+    uint8_t regHighWater_ = PSB_REG_USER_START;
+    TempReg tempStack_[MAX_TEMP_REGS];
+    int     tempDepth_ = 0;
     bool    needsScratchCopy_ = false;
 
     // Error state
@@ -197,6 +224,8 @@ private:
         nodeCount_ = 0; stmtCount_ = 0; varCount_ = 0;
         uniformCount_ = 0; constCount_ = 0; instrCount_ = 0;
         nextReg_ = PSB_REG_USER_START;
+        regHighWater_ = PSB_REG_USER_START;
+        tempDepth_ = 0;
         needsScratchCopy_ = false;
         hasError_ = false;
         errorLine_ = 0;
@@ -232,12 +261,14 @@ private:
             return result;
         }
 
+        result.regHighWater = regHighWater_;
         result.success = true;
         return result;
     }
 
     void SetError(CompileResult& result) {
         result.success = false;
+        result.regHighWater = regHighWater_;
         std::memcpy(result.errorMsg, errorMsg_, sizeof(errorMsg_));
         result.errorLine = errorLine_;
     }
@@ -902,7 +933,29 @@ private:
     }
 
     // ─── Register Allocator ─────────────────────────────────────────────
+    //
+    // Free-after-use with exact LIFO discipline. During expression
+    // evaluation only temporaries are allocated, and they are consumed in
+    // LIFO (postfix) order, so the bump pointer can safely move backwards:
+    // a consuming emitter captures the temp-stack depth, emits its operand
+    // subtrees (which push their result temps), releases them, and then
+    // allocates its own result — which may reuse the just-freed space.
+    // That reuse is sound because every PSB instruction reads all of its
+    // operands before writing its destination (the VM resolves srcA/srcB
+    // into locals and passes vector/scalar inputs by value before storing
+    // to regs[dst]), so dst may alias a source operand of the SAME
+    // instruction.
+    //
+    // Invariants:
+    //   - Persistent registers (named locals, user uniforms) are allocated
+    //     with plain AllocRegs at parse time only, below all temporaries,
+    //     and are never freed.
+    //   - A node's result register handed back to EmitNode's caller is
+    //     either persistent/literal/uniform (nothing pushed) or covered by
+    //     temp entries above the caller's mark (freed by the caller's
+    //     ReleaseTempsTo).
 
+    // Bump-allocate `count` consecutive registers (persistent or internal).
     uint8_t AllocRegs(uint8_t count) {
         if (nextReg_ + count > PSB_REG_USER_END + 1) {
             // Overflowed user registers — wrap (will produce bad code, but error already set)
@@ -911,7 +964,33 @@ private:
         }
         uint8_t r = nextReg_;
         nextReg_ += count;
+        if (nextReg_ > regHighWater_) regHighWater_ = nextReg_;
         return r;
+    }
+
+    // Allocate a temporary expression result and push it on the temp stack.
+    uint8_t AllocTemp(uint8_t count) {
+        uint8_t r = AllocRegs(count);
+        if (hasError_) return r;
+        if (tempDepth_ < MAX_TEMP_REGS) {
+            tempStack_[tempDepth_].reg  = r;
+            tempStack_[tempDepth_].size = count;
+            ++tempDepth_;
+        }
+        return r;
+    }
+
+    // Current temp-stack depth — capture before emitting operand subtrees.
+    int TempMark() const { return tempDepth_; }
+
+    // Pop all temporaries above `mark`, reclaiming their registers.
+    // Entries are strictly ascending in register space, so restoring the
+    // bump pointer to each popped entry's base is an exact LIFO undo.
+    void ReleaseTempsTo(int mark) {
+        while (tempDepth_ > mark) {
+            --tempDepth_;
+            nextReg_ = tempStack_[tempDepth_].reg;
+        }
     }
 
     // ─── Code Generation ────────────────────────────────────────────────
@@ -929,9 +1008,15 @@ private:
             }
         }
 
-        // Generate code for each statement
+        // Generate code for each statement. A bare expression statement
+        // (no assignment/declaration) would leave its result temp on the
+        // stack — reclaim it here. Statements that consume their own
+        // temporaries (assignment, declaration, ...) leave the depth
+        // unchanged, so this is a no-op for them.
         for (int i = 0; i < stmtCount_ && !hasError_; ++i) {
+            int stmtMark = TempMark();
             EmitNode(stmts_[i]);
+            ReleaseTempsTo(stmtMark);
         }
 
         return !hasError_;
@@ -987,7 +1072,7 @@ private:
 
         // Add to constant pool
         uint8_t cIdx = AddConstant(n.litValue);
-        uint8_t dst = AllocRegs(1);
+        uint8_t dst = AllocTemp(1);
         EmitInstruction(PSB_OP_LCONST, dst, cIdx, PSB_OP_UNUSED);
         return dst;
     }
@@ -1017,7 +1102,7 @@ private:
             // Uniforms — need to load first
             uint8_t uSlot = baseReg - PSB_OP_UNIFORM_BASE;
             uint8_t components = strlen(n.swizzle);
-            uint8_t dst = AllocRegs(components);
+            uint8_t dst = AllocTemp(components);
             for (uint8_t i = 0; i < components; ++i) {
                 uint8_t offset = SwizzleOffset(n.swizzle[i]);
                 EmitInstruction(PSB_OP_LUNI, dst + i, uSlot + offset, PSB_OP_UNUSED);
@@ -1028,11 +1113,17 @@ private:
         // Register — compute offsets directly
         uint8_t swzLen = static_cast<uint8_t>(strlen(n.swizzle));
         if (swzLen == 1) {
+            // Single component: alias inside the base — no new allocation.
+            // If the base was a temp, its stack entry keeps covering us.
             return realBase + SwizzleOffset(n.swizzle[0]);
         }
 
-        // Multi-component swizzle — emit MOVs into temp registers
-        uint8_t dst = AllocRegs(swzLen);
+        // Multi-component swizzle — emit MOVs into temp registers.
+        // dst must sit ABOVE the base: a permuting swizzle (.yx) with
+        // dst==base would clobber components still to be read. The base
+        // temp (if any) stays on the stack below dst until the parent
+        // releases.
+        uint8_t dst = AllocTemp(swzLen);
         for (uint8_t i = 0; i < swzLen; ++i) {
             uint8_t srcReg = realBase + SwizzleOffset(n.swizzle[i]);
             EmitInstruction(PSB_OP_MOV, dst + i, srcReg, PSB_OP_UNUSED);
@@ -1051,8 +1142,23 @@ private:
     }
 
     uint8_t EmitBinaryOp(ASTNode& n) {
-        uint8_t left = EmitNode(n.left);
-        uint8_t right = EmitNode(n.right);
+        int mark = TempMark();
+
+        // Evaluate the WIDER side first. If one side is a scalar broadcast
+        // (e.g. scalar * vec3), its temp must land ABOVE the vector temp:
+        // the result dst below reuses the vector temp's space, and a scalar
+        // sitting inside that span would be clobbered after component 0
+        // (a broadcast operand is re-read for every component, not just its
+        // own index). Evaluation order of pure expressions is unobservable,
+        // so swapping is safe; lOp/rOp below keep the true operand order.
+        uint8_t left, right;
+        if (NodeValType(n.left) < NodeValType(n.right)) {
+            right = EmitNode(n.right);
+            left  = EmitNode(n.left);
+        } else {
+            left  = EmitNode(n.left);
+            right = EmitNode(n.right);
+        }
 
         uint8_t opcode;
         switch (n.op) {
@@ -1067,7 +1173,12 @@ private:
         uint8_t compCount = static_cast<uint8_t>(n.valType);
         if (compCount <= 1) compCount = 1;
 
-        uint8_t dst = AllocRegs(compCount);
+        // Child temps are dead once both operands are known — reclaim them,
+        // then allocate the result in the freed space. dst may alias a
+        // same-width operand (same-index read-then-write is safe); a wider
+        // dst never covers a same-or-wider-ranked operand's later reads.
+        ReleaseTempsTo(mark);
+        uint8_t dst = AllocTemp(compCount);
         for (uint8_t c = 0; c < compCount; ++c) {
             uint8_t lOp = OperandOffset(left, c, NodeValType(n.left));
             uint8_t rOp = OperandOffset(right, c, NodeValType(n.right));
@@ -1077,11 +1188,13 @@ private:
     }
 
     uint8_t EmitUnaryNeg(ASTNode& n) {
+        int mark = TempMark();
         uint8_t operand = EmitNode(n.left);
         uint8_t compCount = static_cast<uint8_t>(n.valType);
         if (compCount <= 1) compCount = 1;
 
-        uint8_t dst = AllocRegs(compCount);
+        ReleaseTempsTo(mark);
+        uint8_t dst = AllocTemp(compCount);
         for (uint8_t c = 0; c < compCount; ++c) {
             uint8_t srcOp = OperandOffset(operand, c, NodeValType(n.left));
             EmitInstruction(PSB_OP_NEG, dst + c, srcOp, PSB_OP_UNUSED);
@@ -1106,9 +1219,13 @@ private:
             needsScratchCopy_ = true;
             // arg0 = sampler (ignored, always u_framebuffer)
             // arg1 = vec2 uv
+            int mark = TempMark();
             uint8_t uvReg = (n.argCount >= 2 && n.args[1] >= 0)
                             ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
-            uint8_t dst = AllocRegs(4);
+            // TEX2D reads uv (srcA, srcA+1) before writing dst..dst+3, so
+            // dst may reuse the uv temp's space.
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(4);
             EmitInstruction(PSB_OP_TEX2D, dst, uvReg, PSB_OP_UNUSED);
             return dst;
         }
@@ -1116,24 +1233,34 @@ private:
         // ── Single-arg math functions ───────────────────────────────────
         uint8_t mathOp = GetMathOpcode(fname);
         if (mathOp != 0) {
-            uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
-            uint8_t dst = AllocRegs(1);
+            int mark = TempMark();
 
             // Two-arg math functions
             if (strcmp(fname, "pow") == 0 || strcmp(fname, "atan") == 0 ||
                 strcmp(fname, "mod") == 0 || strcmp(fname, "min") == 0 ||
                 strcmp(fname, "max") == 0) {
+                uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
                 uint8_t arg2 = (n.argCount > 1 && n.args[1] >= 0) ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
                 if (mathOp == PSB_OP_ATAN && n.argCount == 2) mathOp = PSB_OP_ATAN2;
+                ReleaseTempsTo(mark);
+                uint8_t dst = AllocTemp(1);
                 EmitInstruction(mathOp, dst, arg, arg2);
                 return dst;
             }
 
-            // Three-arg functions
+            // Three-arg functions. These are 3-OPERAND instructions: the
+            // third argument is pre-loaded into dst (MOV) and the op then
+            // reads it back from dst (see the CLAMP/MIX/SSTEP cases in the
+            // VM). dst therefore must NOT alias arg1/arg2 — the preload MOV
+            // would clobber them before the op reads them. Keep all arg
+            // temps live (no release) and allocate dst in fresh space
+            // above; the parent releases everything.
             if (strcmp(fname, "clamp") == 0 || strcmp(fname, "mix") == 0 ||
                 strcmp(fname, "smoothstep") == 0) {
+                uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
                 uint8_t arg2 = (n.argCount > 1 && n.args[1] >= 0) ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
                 uint8_t arg3 = (n.argCount > 2 && n.args[2] >= 0) ? EmitNode(n.args[2]) : PSB_OP_LITERAL_BASE;
+                uint8_t dst = AllocTemp(1);
                 // For 3-operand instructions: dst is pre-loaded with 3rd arg
                 EmitInstruction(PSB_OP_MOV, dst, arg3, PSB_OP_UNUSED);
                 EmitInstruction(mathOp, dst, arg, arg2);
@@ -1142,58 +1269,77 @@ private:
 
             // step(edge, x) — 2 args
             if (strcmp(fname, "step") == 0) {
+                uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
                 uint8_t arg2 = (n.argCount > 1 && n.args[1] >= 0) ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
+                ReleaseTempsTo(mark);
+                uint8_t dst = AllocTemp(1);
                 EmitInstruction(PSB_OP_STEP, dst, arg, arg2);
                 return dst;
             }
 
             // Single-arg
+            uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(1);
             EmitInstruction(mathOp, dst, arg, PSB_OP_UNUSED);
             return dst;
         }
 
         // ── Geometric functions ─────────────────────────────────────────
+        // The VM passes the backend's inputs BY VALUE (PglShaderBackend
+        // Len/Dot/Norm/Cross/Dist take floats, not references), so dst may
+        // reuse an argument temp's space.
         if (strcmp(fname, "length") == 0) {
+            int mark = TempMark();
             uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
-            uint8_t dst = AllocRegs(1);
             ValType argType = (n.argCount > 0 && n.args[0] >= 0) ? NodeValType(n.args[0]) : VTYPE_FLOAT;
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(1);
             EmitInstruction(argType >= VTYPE_VEC3 ? PSB_OP_LEN3 : PSB_OP_LEN2,
                             dst, arg, PSB_OP_UNUSED);
             return dst;
         }
 
         if (strcmp(fname, "distance") == 0) {
+            int mark = TempMark();
             uint8_t arg1 = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
             uint8_t arg2 = (n.argCount > 1 && n.args[1] >= 0) ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
-            uint8_t dst = AllocRegs(1);
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(1);
             EmitInstruction(PSB_OP_DIST2, dst, arg1, arg2);
             return dst;
         }
 
         if (strcmp(fname, "dot") == 0) {
+            int mark = TempMark();
             uint8_t arg1 = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
             uint8_t arg2 = (n.argCount > 1 && n.args[1] >= 0) ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
-            uint8_t dst = AllocRegs(1);
             ValType argType = (n.argCount > 0 && n.args[0] >= 0) ? NodeValType(n.args[0]) : VTYPE_VEC2;
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(1);
             EmitInstruction(argType >= VTYPE_VEC3 ? PSB_OP_DOT3 : PSB_OP_DOT2,
                             dst, arg1, arg2);
             return dst;
         }
 
         if (strcmp(fname, "normalize") == 0) {
+            int mark = TempMark();
             uint8_t arg = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
             ValType argType = (n.argCount > 0 && n.args[0] >= 0) ? NodeValType(n.args[0]) : VTYPE_VEC3;
             uint8_t comps = (argType >= VTYPE_VEC3) ? 3 : 2;
-            uint8_t dst = AllocRegs(comps);
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(comps);
             EmitInstruction(comps == 3 ? PSB_OP_NORM3 : PSB_OP_NORM2,
                             dst, arg, PSB_OP_UNUSED);
             return dst;
         }
 
         if (strcmp(fname, "cross") == 0) {
+            int mark = TempMark();
             uint8_t arg1 = (n.argCount > 0 && n.args[0] >= 0) ? EmitNode(n.args[0]) : PSB_OP_LITERAL_BASE;
             uint8_t arg2 = (n.argCount > 1 && n.args[1] >= 0) ? EmitNode(n.args[1]) : PSB_OP_LITERAL_BASE;
-            uint8_t dst = AllocRegs(3);
+            ReleaseTempsTo(mark);
+            uint8_t dst = AllocTemp(3);
             EmitInstruction(PSB_OP_CROSS, dst, arg1, arg2);
             return dst;
         }
@@ -1203,11 +1349,16 @@ private:
     }
 
     uint8_t EmitConstructor(ASTNode& n, uint8_t targetComps) {
-        uint8_t dst = AllocRegs(targetComps);
+        // dst is allocated FIRST (below the argument temps) so an argument
+        // can never be clobbered by the fill MOVs; it is returned to the
+        // parent as a temp. Each argument's temps are released right after
+        // it has been copied into dst — only one argument is live at a time.
+        uint8_t dst = AllocTemp(targetComps);
         uint8_t filled = 0;
 
         for (uint8_t i = 0; i < n.argCount && filled < targetComps; ++i) {
             if (n.args[i] < 0) continue;
+            int argMark = TempMark();
             uint8_t argReg = EmitNode(n.args[i]);
             ValType aType = NodeValType(n.args[i]);
             uint8_t argComps = static_cast<uint8_t>(aType);
@@ -1218,6 +1369,7 @@ private:
                 EmitInstruction(PSB_OP_MOV, dst + filled, srcOp, PSB_OP_UNUSED);
                 filled++;
             }
+            ReleaseTempsTo(argMark);
         }
 
         // If only 1 arg provided and target needs more (e.g. vec3(0.5)),
@@ -1233,15 +1385,17 @@ private:
     }
 
     uint8_t EmitAssignment(ASTNode& n) {
+        int mark = TempMark();
         uint8_t valueReg = EmitNode(n.right);
 
         // Get target variable
-        if (n.left < 0) return PSB_OP_UNUSED;
+        if (n.left < 0) { ReleaseTempsTo(mark); return PSB_OP_UNUSED; }
         ASTNode& target = nodes_[n.left];
 
         VarInfo* v = FindVar(target.name);
         if (!v) {
             Error(0, "undefined assignment target");
+            ReleaseTempsTo(mark);
             return PSB_OP_UNUSED;
         }
 
@@ -1253,22 +1407,26 @@ private:
             EmitInstruction(PSB_OP_MOV, v->reg + c, srcOp, PSB_OP_UNUSED);
         }
 
+        // Value copied into the persistent target — reclaim RHS temps.
+        ReleaseTempsTo(mark);
         return v->reg;
     }
 
     uint8_t EmitComponentAssign(ASTNode& n) {
         // n.left is a NODE_SWIZZLE, n.right is the value expression
+        int mark = TempMark();
         uint8_t valueReg = EmitNode(n.right);
 
-        if (n.left < 0) return PSB_OP_UNUSED;
+        if (n.left < 0) { ReleaseTempsTo(mark); return PSB_OP_UNUSED; }
         ASTNode& swzNode = nodes_[n.left];
-        if (swzNode.left < 0) return PSB_OP_UNUSED;
+        if (swzNode.left < 0) { ReleaseTempsTo(mark); return PSB_OP_UNUSED; }
 
         // Get the base variable from the swizzle's child
         ASTNode& baseNode = nodes_[swzNode.left];
         VarInfo* v = FindVar(baseNode.name);
         if (!v) {
             Error(0, "undefined assignment target");
+            ReleaseTempsTo(mark);
             return PSB_OP_UNUSED;
         }
 
@@ -1279,6 +1437,7 @@ private:
             EmitInstruction(PSB_OP_MOV, v->reg + offset, srcOp, PSB_OP_UNUSED);
         }
 
+        ReleaseTempsTo(mark);
         return v->reg;
     }
 
@@ -1287,7 +1446,10 @@ private:
         if (!v) return PSB_OP_UNUSED;
 
         if (n.left >= 0) {
-            // Has initializer
+            // Has initializer. The variable's registers are persistent
+            // (allocated at parse time, below all temps); the initializer's
+            // temps are reclaimed after the copy.
+            int mark = TempMark();
             uint8_t initReg = EmitNode(n.left);
             uint8_t compCount = static_cast<uint8_t>(v->type);
             if (compCount < 1) compCount = 1;
@@ -1296,6 +1458,7 @@ private:
                 uint8_t srcOp = OperandOffset(initReg, c, NodeValType(n.left));
                 EmitInstruction(PSB_OP_MOV, v->reg + c, srcOp, PSB_OP_UNUSED);
             }
+            ReleaseTempsTo(mark);
         }
 
         return v->reg;
