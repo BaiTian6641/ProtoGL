@@ -123,6 +123,35 @@ public:
         WriteCommand(PGL_CMD_SET_CAMERA, &payload, sizeof(payload));
     }
 
+    /// V9 (G3/G7): bind a camera to a render target + optional viewport
+    /// scissor (PGL_CMD_SET_CAMERA_TARGET, additive under protocol v8).
+    /// Feature-detect PGL_CAP_MULTI_CAMERA (multiple active cameras) and
+    /// PGL_CAP_RENDER_TO_LAYER (non-zero targetLayer) via PglCapSupports()
+    /// before relying on this — older GPUs skip the opcode as unknown and
+    /// every camera renders to layer 0 full-frame (v8 semantics).
+    ///
+    /// @param cameraId    Camera slot (0..PGL_MAX_CAMERAS-1)
+    /// @param targetLayer 0 = 3D back buffer (v8 default); 1–7 = layer FB
+    ///                    (create the layer BEFORE targeting it)
+    /// @param vpX..vpH    Viewport scissor rect in target pixels (a clip,
+    ///                    not a projection change); ignored when flags bit0
+    ///                    is clear (full target = v8 default)
+    /// @param flags       PglCameraTargetFlags (bit0: enable scissor)
+    void SetCameraTarget(PglCamera cameraId, PglLayer targetLayer,
+                         uint16_t vpX, uint16_t vpY, uint16_t vpW, uint16_t vpH,
+                         uint8_t flags) {
+        PglCmdSetCameraTarget payload{};
+        payload.cameraId    = cameraId;
+        payload.targetLayer = targetLayer;
+        payload.vpX         = vpX;
+        payload.vpY         = vpY;
+        payload.vpW         = vpW;
+        payload.vpH         = vpH;
+        payload.flags       = flags;
+        payload.reserved    = 0;
+        WriteCommand(PGL_CMD_SET_CAMERA_TARGET, &payload, sizeof(payload));
+    }
+
     // ─── Draw Calls ─────────────────────────────────────────────────────
 
     void DrawObject(PglMesh meshId, PglMaterial materialId,
@@ -526,6 +555,59 @@ public:
         PglCmdDestroyMaterial payload{};
         payload.materialId = materialId;
         WriteCommand(PGL_CMD_DESTROY_MATERIAL, &payload, sizeof(payload));
+    }
+
+    /**
+     * @brief V9 (G4): create a material with source-over alpha blending.
+     *
+     * Additive variant of CreateMaterial(): the blend mode is fixed to
+     * PGL_BLEND_ALPHA and the type-specific params are sent with an appended
+     * little-endian float alpha (0..1) as the LAST 4 bytes (the wire
+     * convention documented in PglTypes.h; the GPU defaults alpha to 1.0f
+     * when the appended bytes are absent, so v8 hosts behave as opaque).
+     * Requires PGL_CAP_ALPHA_BLEND_3D on the GPU — feature-detect via
+     * PglCapSupports() before use.
+     *
+     * NO order-independent transparency: the GPU blends each translucent
+     * triangle over the finished opaque scene in Z order, so hosts must draw
+     * translucent geometry BACK-TO-FRONT (painter's algorithm).
+     */
+    void CreateMaterialAlpha(PglMaterial materialId, PglMaterialType type,
+                             const void* params, uint16_t paramSize,
+                             float alpha) {
+        PglCmdCreateMaterialHeader hdr{};
+        hdr.materialId   = materialId;
+        hdr.materialType = static_cast<uint8_t>(type);
+        hdr.blendMode    = static_cast<uint8_t>(PGL_BLEND_ALPHA);
+
+        const uint16_t totalPayload = sizeof(hdr) + paramSize + sizeof(float);
+        WriteCommandHeader(PGL_CMD_CREATE_MATERIAL, totalPayload);
+        WriteRaw(&hdr, sizeof(hdr));
+        if (paramSize > 0 && params) {
+            WriteRaw(params, paramSize);
+        }
+        WriteRaw(&alpha, sizeof(alpha));   // appended alpha = LAST 4 bytes
+    }
+
+    /**
+     * @brief V9 (G6): create an IMAGE material with explicit filter flags.
+     *
+     * Additive variant: sends the grown 20-byte PglParamImage (the frozen
+     * 18-byte v8 layout + filterFlags + reserved).  filterFlags is a
+     * PglImageFilterFlags bitmask (bit0 = bilinear).  Requires
+     * PGL_CAP_BILINEAR for any non-zero flags — v8 GPUs ignore the appended
+     * bytes and sample nearest, so hosts MUST feature-detect before setting
+     * them.  Existing CreateMaterial() calls keep working unchanged (pass an
+     * 18-byte paramSize for the frozen v8 form, or sizeof(PglParamImage)
+     * with filterFlags = 0 for explicit nearest on the grown form).
+     */
+    void CreateImageMaterial(PglMaterial materialId, PglBlendMode blendMode,
+                             const PglParamImage& img, uint8_t filterFlags) {
+        PglParamImage out = img;
+        out.filterFlags = filterFlags;
+        out.reserved    = 0;
+        CreateMaterial(materialId, PGL_MAT_IMAGE, blendMode,
+                       &out, sizeof(out));
     }
 
     // ─── Texture Resources ──────────────────────────────────────────────

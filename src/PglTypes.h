@@ -6,7 +6,13 @@
  * They are shared between the ESP32-S3 host encoder and the RP2350 GPU decoder.
  *
  * ProtoGL API Specification v0.8.0 — protocol v8: capability flags16,
- * generation-checked handles, parser error bitmask (append-only, see below)
+ * generation-checked handles, parser error bitmask (append-only, see below).
+ * V9 feature extensions ship UNDER protocol v8 via flags16 discovery:
+ * G4 alpha blend (PGL_BLEND_ALPHA + appended float alpha convention),
+ * G6 bilinear filtering (PglParamImage grown 18 → 20 bytes, both accepted),
+ * G3/G7 multi-camera + render-to-layer (new additive opcode 0x88
+ * PGL_CMD_SET_CAMERA_TARGET — old GPUs skip it as unknown, v8 hosts never
+ * send it and keep layer-0 + full-frame semantics).
  */
 
 #pragma once
@@ -282,6 +288,40 @@ struct PglCmdSetCamera {
     uint8_t is2D;
 };
 static_assert(sizeof(PglCmdSetCamera) == 75, "PglCmdSetCamera must be 75 bytes");
+
+// CMD_SET_CAMERA_TARGET (0x88) — V9 (G3 multi-camera + G7 render-to-layer),
+// additive under protocol v8 (discovered via PGL_CAP_MULTI_CAMERA /
+// PGL_CAP_RENDER_TO_LAYER in flags16; PGL_PROTOCOL_VERSION stays 8).
+//
+// Binds a camera to a render target and an optional viewport scissor:
+//   targetLayer = 0   → the 3D back buffer (v8 default; always valid)
+//   targetLayer = 1–7 → that layer's framebuffer (must exist: LAYER_CREATE
+//                       must precede this command; the GPU validates and
+//                       re-checks every frame — a destroyed layer target
+//                       disables the camera's output, fail-closed)
+// The camera renders the SAME full-frame projection as always; the viewport
+// rect (vpX, vpY, vpW, vpH, in target pixel coordinates) is a SCISSOR CLIP,
+// not a projection change — tiles outside the rect are left untouched.
+// vpW/vpH = 0 with the scissor flag set → empty scissor → camera draws
+// nothing.  When flags bit0 is CLEAR the vp* fields are ignored and the
+// whole target is rendered (v8 semantics).  v8 hosts never send this
+// command → all cameras default to layer 0 + full frame.
+struct PglCmdSetCameraTarget {
+    uint8_t  cameraId;
+    uint8_t  targetLayer;   // PglLayer (0 = back buffer)
+    uint16_t vpX;           // viewport rect, target pixels
+    uint16_t vpY;
+    uint16_t vpW;
+    uint16_t vpH;
+    uint8_t  flags;         // PglCameraTargetFlags
+    uint8_t  reserved;      // 0
+};
+static_assert(sizeof(PglCmdSetCameraTarget) == 12, "PglCmdSetCameraTarget must be 12 bytes");
+
+/// PglCmdSetCameraTarget::flags bits (V9/G3+G7).
+enum PglCameraTargetFlags : uint8_t {
+    PGL_CAMERA_TARGET_SCISSOR = 0x01,  // bit0: enable viewport scissor (else full target)
+};
 
 // ─── Screen-Space Shader System ─────────────────────────────────────────────
 //
@@ -734,6 +774,10 @@ enum PglBlendMode : uint8_t {
     PGL_BLEND_SOFTLIGHT     = 9,
     PGL_BLEND_REPLACE       = 10,
     PGL_BLEND_EFFICIENT_MASK = 11,
+    // V9 (G4): source-over alpha blend in the 3D ROP.  Values 0–11 are the
+    // legacy per-material Combine modes; 12 is the first value that selects
+    // the framebuffer blend path (see the alpha convention note below).
+    PGL_BLEND_ALPHA         = 12,
 };
 
 // ─── Texture Formats ────────────────────────────────────────────────────────
@@ -744,6 +788,16 @@ enum PglTextureFormat : uint8_t {
 };
 
 // ─── Material Parameter Structs (packed for wire) ───────────────────────────
+//
+// V9 (G4) alpha convention: when a material is created with
+// blendMode == PGL_BLEND_ALPHA, its type-specific params are expected to END
+// with an appended little-endian float alpha (0..1) — i.e. the alpha is the
+// LAST 4 bytes of the param block.  The GPU parser reads it only when the
+// received paramSize covers the type's base size + 4 and defaults to 1.0f
+// (fully opaque) otherwise, so v8 hosts that send no alpha bytes behave
+// exactly as before (payloadLength-driven tolerance; alpha is clamped to
+// [0,1] GPU-side).  There is NO order-independent transparency: hosts must
+// draw translucent geometry back-to-front (painter's algorithm).
 
 #pragma pack(push, 1)
 
@@ -793,11 +847,28 @@ struct PglParamRainbowNoise {
 };
 
 struct PglParamImage {
+    // ── bytes 0–17: frozen v8 layout (do not change — append-only growth) ──
     uint16_t textureId;
     float    offsetX, offsetY;
     float    scaleX, scaleY;
+    // ── bytes 18–19: V9 (G6) extension; parsers accept BOTH the 18-byte ──
+    // (v8 → filterFlags read as 0 = nearest) and the 20-byte form.  Hosts
+    // MUST feature-detect PGL_CAP_BILINEAR before setting filterFlags:
+    // v8 GPUs ignore the appended bytes and sample nearest.
+    uint8_t  filterFlags;   // PglImageFilterFlags (bit0: bilinear)
+    uint8_t  reserved;      // 0
 };
-static_assert(sizeof(PglParamImage) == 18, "PglParamImage must be 18 bytes");
+static_assert(sizeof(PglParamImage) == 20, "PglParamImage must be 20 bytes");
+
+/// Frozen v8 size of PglParamImage (bytes 0–17).  A paramSize of exactly
+/// this on the wire means "no filter flags sent" → v8 nearest semantics.
+static constexpr uint16_t PGL_PARAM_IMAGE_V8_SIZE = 18;
+
+/// PglParamImage::filterFlags bits (V9/G6).
+enum PglImageFilterFlags : uint8_t {
+    PGL_IMAGE_FILTER_NEAREST  = 0x00,  // default — v8 semantics
+    PGL_IMAGE_FILTER_BILINEAR = 0x01,  // bit0: bilinear 4-tap (UV-mapped only)
+};
 
 struct PglParamCombine {
     uint16_t materialIdA;
@@ -1018,10 +1089,10 @@ static constexpr uint32_t PGL_CAP_ERROR_BITMASK   = (1u << 10); // v8: parser er
 static constexpr uint32_t PGL_CAP_VS_PSB          = (1u << 11); // V10 (planned): vertex-stage PSB programs
 static constexpr uint32_t PGL_CAP_FS_PSB          = (1u << 12); // V10 (planned): fragment-stage PSB programs
 static constexpr uint32_t PGL_CAP_NEAR_CLIP       = (1u << 13); // V9  (planned): near-plane triangle clipping
-static constexpr uint32_t PGL_CAP_MULTI_CAMERA    = (1u << 14); // V9  (planned): multiple active cameras + per-camera target
-static constexpr uint32_t PGL_CAP_ALPHA_BLEND_3D  = (1u << 15); // V9  (planned): alpha blending in the 3D path
-static constexpr uint32_t PGL_CAP_BILINEAR        = (1u << 16); // V9  (planned): bilinear texture filtering
-static constexpr uint32_t PGL_CAP_RENDER_TO_LAYER = (1u << 17); // V9  (planned): 3D render targets any layer
+static constexpr uint32_t PGL_CAP_MULTI_CAMERA    = (1u << 14); // V9 (G3): multiple active cameras + per-camera target (PGL_CMD_SET_CAMERA_TARGET)
+static constexpr uint32_t PGL_CAP_ALPHA_BLEND_3D  = (1u << 15); // V9 (G4): alpha blending in the 3D path (PGL_BLEND_ALPHA)
+static constexpr uint32_t PGL_CAP_BILINEAR        = (1u << 16); // V9 (G6): bilinear texture filtering (PglParamImage::filterFlags)
+static constexpr uint32_t PGL_CAP_RENDER_TO_LAYER = (1u << 17); // V9 (G7): 3D render targets any layer (PGL_CMD_SET_CAMERA_TARGET)
 static constexpr uint32_t PGL_CAP_M13_2D          = (1u << 18); // M13 (planned): full 2D op family (clip/gradient/sprite/text...)
 
 /// Test a logical capability bit against a response (v7-safe: bits 8+ read 0

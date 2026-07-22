@@ -89,6 +89,10 @@ static constexpr uint8_t PGL_CMD_DESTROY_SHADER_PROGRAM   = 0x85;
 static constexpr uint8_t PGL_CMD_BIND_SHADER_PROGRAM      = 0x86;
 static constexpr uint8_t PGL_CMD_SET_SHADER_UNIFORM       = 0x87;
 
+// V9 (G3 multi-camera + G7 render-to-layer): per-camera render target +
+// viewport scissor (additive under protocol v8 — old GPUs skip it as unknown)
+static constexpr uint8_t PGL_CMD_SET_CAMERA_TARGET        = 0x88;
+
 static constexpr uint8_t PGL_CMD_END_FRAME                = 0x8F;
 
 // ─── Display Driver Commands (0x90 – 0x9F) ──────────────────────────────────
